@@ -15,6 +15,7 @@ function distanceKm(a, b) {
 
 export class GoogleVisitService {
   constructor(dataDir) {
+    this.configFile = path.join(dataDir, 'google-places-config.json');
     this.cacheFile = path.join(dataDir, 'google-visit-cache.json');
     this.cache = {};
     this.usage = {};
@@ -23,9 +24,18 @@ export class GoogleVisitService {
   async load() {
     await mkdir(path.dirname(this.cacheFile), { recursive: true });
     try { const value = JSON.parse(await readFile(this.cacheFile, 'utf8')); this.cache = value.cache || {}; this.usage = value.usage || {}; } catch {}
+    if (!this.apiKey) { try { this.apiKey = JSON.parse(await readFile(this.configFile, 'utf8')).apiKey || ''; } catch {} }
     if (!this.apiKey) { try { this.apiKey = JSON.parse(await readFile(OLD_CONFIG, 'utf8')).apiKey || ''; } catch {} }
   }
-  status() { return { configured: Boolean(this.apiKey), usedThisMonth: Number(this.usage[monthKey()] || 0), monthlyLimit: MONTHLY_LIMIT }; }
+  status() { return { configured: Boolean(this.apiKey), configuredByEnvironment: Boolean(process.env.GOOGLE_PLACES_API_KEY), usedThisMonth: Number(this.usage[monthKey()] || 0), monthlyLimit: MONTHLY_LIMIT }; }
+  async setApiKey(apiKey) {
+    if (process.env.GOOGLE_PLACES_API_KEY) throw new Error('API 키가 환경 변수로 설정되어 있어 화면에서 바꿀 수 없습니다.');
+    this.apiKey = typeof apiKey === 'string' ? apiKey.trim() : '';
+    const temp = `${this.configFile}.tmp`;
+    await writeFile(temp, `${JSON.stringify({ apiKey: this.apiKey }, null, 2)}\n`, 'utf8');
+    await rename(temp, this.configFile);
+    return this.status();
+  }
   async save() { const temp = `${this.cacheFile}.tmp`; await writeFile(temp, `${JSON.stringify({ cache: this.cache, usage: this.usage })}\n`); await rename(temp, this.cacheFile); }
   privateName(visit, places) {
     return places.map(place => ({ place, km: distanceKm(visit, place) })).filter(x => x.km * 1000 <= Number(x.place.radiusMeters || 0)).sort((a, b) => a.km - b.km)[0]?.place?.name || null;

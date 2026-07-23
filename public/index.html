@@ -1,1 +1,75 @@
-<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#11130f"><title>사진 폴더 관리</title><link rel="stylesheet" href="/style.css"></head><body class="admin"><main class="shell"><header><div><p class="eyebrow">REMOTE PHOTO SLIDES 2</p><h1>사진 폴더 관리</h1><p>선택한 폴더와 하위 폴더의 JPG가 모든 기기에 자동 반영됩니다.</p></div><a class="primary" href="/slideshow.html">슬라이드쇼 열기</a></header><section class="status"><strong id="status">PC 서버 확인 중</strong><span id="root"></span></section><section class="panel"><div class="heading"><div><small>현재 위치</small><nav id="breadcrumbs"></nav></div><button id="select">이 폴더 선택</button></div><div id="folders" class="folders"></div></section><section class="panel"><div class="heading"><h2>선택한 폴더</h2><b id="count">0개</b></div><div id="selected" class="selected"></div><div class="save"><span id="message"></span><button id="save">선택 저장</button></div></section></main><script type="module" src="/app.js"></script></body></html>
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#11130f">
+  <title>사진 폴더 관리</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body class="admin-page">
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">REMOTE PHOTO SLIDES</p>
+        <h1>사진 폴더 관리</h1>
+        <p class="intro">선택한 폴더와 그 아래의 모든 JPG가 슬라이드쇼에 자동으로 반영됩니다.</p>
+      </div>
+      <a class="primary-link" href="slideshow.html">슬라이드쇼 열기</a>
+    </header>
+
+    <section class="status-card" aria-live="polite">
+      <span class="status-dot" id="server-dot"></span>
+      <div>
+        <strong id="server-status">PC 서버 확인 중</strong>
+        <p id="root-path">사진 폴더를 불러오고 있습니다.</p>
+        <p id="location-status">위치 기능을 준비하고 있습니다.</p>
+      </div>
+    </section>
+
+    <section class="panel google-panel">
+      <div class="panel-heading">
+        <div>
+          <p class="section-label">더 정확한 랜드마크</p>
+          <h2>Google Places</h2>
+        </div>
+        <span id="google-status" class="count-badge">설정 확인 중</span>
+      </div>
+      <p class="setting-description">API 키는 이 PC에만 저장됩니다. 사진 GPS를 가까운 지역끼리 묶어 검색하며 월 4,000회에서 자동으로 멈춥니다.</p>
+      <div class="api-key-row">
+        <input id="google-api-key" class="api-key-input" type="password" autocomplete="off" placeholder="Google Places API 키">
+        <button id="save-google-key" class="soft-button" type="button">API 키 저장</button>
+      </div>
+      <p id="google-message" class="save-message"></p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="section-label">현재 위치</p>
+          <nav id="breadcrumbs" class="breadcrumbs" aria-label="현재 폴더"></nav>
+        </div>
+        <button id="select-current" class="soft-button" type="button">이 폴더 선택</button>
+      </div>
+      <div id="folder-list" class="folder-list" aria-live="polite"></div>
+    </section>
+
+    <section class="panel selected-panel">
+      <div class="panel-heading">
+        <div>
+          <p class="section-label">재생 대상</p>
+          <h2>선택한 폴더</h2>
+        </div>
+        <span id="selected-count" class="count-badge">0개</span>
+      </div>
+      <div id="selected-list" class="selected-list"></div>
+      <div class="save-row">
+        <p id="save-message" class="save-message"></p>
+        <button id="save-selection" class="save-button" type="button">선택 저장</button>
+      </div>
+    </section>
+    <footer class="data-credit">위치 데이터 © Google · <a href="https://www.geonames.org/" target="_blank" rel="noreferrer">GeoNames</a> · <a href="https://www.geoboundaries.org/" target="_blank" rel="noreferrer">geoBoundaries</a></footer>
+  </main>
+  <script src="admin.js"></script>
+</body>
+</html>

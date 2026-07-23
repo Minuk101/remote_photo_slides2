@@ -249,12 +249,35 @@ export class VisitAnalysisService {
     return { busy: this.busy, error: this.error, generatedAt: this.result?.generatedAt || null, summary: this.result?.summary || null, google: this.google.status() };
   }
 
+  locationStatus() {
+    const summary = this.result?.summary;
+    return {
+      phase: this.busy ? '이동 기록 분석 중' : summary ? '위치 분석 완료' : '위치 분석 대기 중',
+      total: summary?.photos || 0,
+      checked: summary?.photos || 0,
+      gps: summary?.locatedPhotos || 0,
+      ready: summary?.locatedPhotos || 0,
+      googlePlaces: this.google.status()
+    };
+  }
+
+  async setGooglePlacesApiKey(apiKey) { return this.google.setApiKey(apiKey); }
+
   get visits() { return this.result?.visits || []; }
 
   rebuildLocationIndex() {
     this.locations.clear();
     for (const visit of this.visits) {
-      const location = { name: visit.newLabel || visit.oldLabel || null, latitude: visit.latitude, longitude: visit.longitude, source: visit.labelSource, radiusMeters: visit.radiusMeters };
+      const location = {
+        landmark: visit.newLabel || visit.oldLabel || null,
+        latitude: visit.latitude,
+        longitude: visit.longitude,
+        city: null,
+        country: null,
+        landmarkDistanceMeters: null,
+        landmarkSource: visit.labelSource === 'google-visit' ? 'google' : 'timeline',
+        visitRadiusMeters: visit.radiusMeters
+      };
       for (const photo of visit.photos) this.locations.set(normalizeFile(photo.file), location);
     }
   }

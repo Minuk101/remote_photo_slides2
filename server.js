@@ -37,6 +37,10 @@ function safeRelative(value = '') {
 function absolute(relative = '') { return path.resolve(PHOTO_ROOT, ...safeRelative(relative).split('/').filter(Boolean)); }
 function idFor(relative) { return crypto.createHash('sha1').update(relative.toLocaleLowerCase('en-US')).digest('hex').slice(0, 20); }
 function compare(a, b) { return a.localeCompare(b, 'ko-KR', { numeric: true }); }
+function removeNestedFolders(folders) {
+  const unique = [...new Set(folders.map(safeRelative))].sort((a, b) => a.length - b.length || compare(a, b));
+  return unique.filter((folder, index) => !unique.some((parent, parentIndex) => parentIndex !== index && (parent === '' || folder.startsWith(`${parent}/`))));
+}
 
 async function readJson(file, fallback) { try { return JSON.parse(await readFile(file, 'utf8')); } catch { return fallback; } }
 async function saveSettings() {
@@ -79,6 +83,7 @@ async function scan(force = false) {
       version, scannedAt: Date.now(), files: new Map(files.map(file => [file.id, file])),
       photos: files.map(file => ({
         id: file.id, name: path.basename(file.relative), group: file.relative.includes('/') ? file.relative.slice(0, file.relative.lastIndexOf('/')) : '',
+        modifiedAt: file.modifiedAt, size: file.size,
         url: `/media/${file.id}?v=${file.modifiedAt}-${file.size}`, location: service.locationForFile(file.file)
       }))
     };
@@ -106,19 +111,29 @@ const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; ch
 const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
-    if (request.method === 'GET' && url.pathname === '/api/config') return json(response, 200, { photoRoot: PHOTO_ROOT, selectedFolders: settings.selectedFolders, analysis: service.status() });
+    if (request.method === 'GET' && url.pathname === '/api/config') {
+      let rootAvailable = true; try { await stat(PHOTO_ROOT); } catch { rootAvailable = false; }
+      return json(response, 200, { rootName: path.basename(PHOTO_ROOT), rootPath: PHOTO_ROOT, rootAvailable, selectedFolders: settings.selectedFolders });
+    }
+    if (request.method === 'GET' && url.pathname === '/api/location-status') return json(response, 200, service.locationStatus());
+    if (request.method === 'PUT' && url.pathname === '/api/google-places') {
+      const value = await body(request); const googlePlaces = await service.setGooglePlacesApiKey(value.apiKey); return json(response, 200, { googlePlaces });
+    }
     if (request.method === 'GET' && url.pathname === '/api/folders') {
       const relative = safeRelative(url.searchParams.get('path') || '');
       const folders = (await readdir(absolute(relative), { withFileTypes: true })).filter(item => item.isDirectory()).map(item => ({ name: item.name, path: relative ? `${relative}/${item.name}` : item.name })).sort((a, b) => compare(a.name, b.name));
-      return json(response, 200, { path: relative, folders });
+      return json(response, 200, { currentPath: relative, folders });
     }
     if (request.method === 'PUT' && url.pathname === '/api/selection') {
-      const value = await body(request); settings.selectedFolders = [...new Set((value.selectedFolders || []).map(safeRelative))]; await saveSettings(); configureWatchers(); dirty = true;
-      return json(response, 200, { selectedFolders: settings.selectedFolders });
+      const value = await body(request); if (!Array.isArray(value.folders)) return json(response, 400, { error: '폴더 목록이 필요합니다.' });
+      settings.selectedFolders = removeNestedFolders(value.folders); await saveSettings(); configureWatchers(); dirty = true;
+      const current = await scan(true); return json(response, 200, { selectedFolders: settings.selectedFolders, photoCount: current.photos.length, version: current.version });
     }
     if (request.method === 'GET' && url.pathname === '/api/photos') {
-      const value = await scan(url.searchParams.get('refresh') === '1'); cleanupCache().catch(() => {});
-      return json(response, 200, { version: value.version, photos: value.photos, selectedFolders: settings.selectedFolders, analysis: service.status() });
+      const value = await scan(); cleanupCache().catch(() => {});
+      const knownVersion = url.searchParams.get('version');
+      if (knownVersion && knownVersion === value.version) return json(response, 200, { unchanged: true, version: value.version });
+      return json(response, 200, { unchanged: false, version: value.version, photos: value.photos });
     }
     const media = url.pathname.match(/^\/media\/([a-f0-9]+)$/);
     if (request.method === 'GET' && media) {
