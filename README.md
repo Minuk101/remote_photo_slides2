@@ -13,6 +13,8 @@
 - 촬영 시각 앞뒤 위치를 보간하고 인접 사진을 방문 단위로 묶어 장소 결정
 - 교정된 사진 GPS는 타임라인보다 우선
 - 사진 원본과 EXIF는 수정하지 않음
+- 새 JPG 또는 GPSLogger·Google 타임라인 변경 후 5분 동안 추가 변경이 없으면 위치를 한 번만 자동 재분석
+- 업로드 중에는 대기 시간을 계속 연장하고 분석 중 들어온 변경은 다음 묶음으로 처리
 
 ## 기본 경로
 
@@ -32,4 +34,4 @@
 http://192.168.x.x:8081
 ```
 
-경로와 포트는 환경 변수 `PHOTO_ROOT`, `PHOTO_ROOTS`, `GPX_PATH`, `GPSLOGGER_DIR`, `PORT`로 변경할 수 있습니다.
+경로와 포트는 환경 변수 `PHOTO_ROOT`, `PHOTO_ROOTS`, `GPX_PATH`, `GPSLOGGER_DIR`, `PORT`로 변경할 수 있습니다. 자동 분석 대기 시간은 `ANALYSIS_QUIET_MS`로 변경하며 기본값은 300,000ms(5분)입니다.

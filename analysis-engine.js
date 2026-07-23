@@ -72,6 +72,10 @@ function normalizeFile(value) {
   return path.resolve(value || '').replaceAll('/', '\\').toLocaleLowerCase('en-US');
 }
 
+function analyzedFileId(file) {
+  return crypto.createHash('sha1').update(normalizeFile(file)).digest('hex').slice(0, 20);
+}
+
 async function readJson(file, fallback) {
   try { return JSON.parse(await readFile(file, 'utf8')); } catch { return fallback; }
 }
@@ -282,6 +286,7 @@ export class VisitAnalysisService {
   constructor() {
     this.result = null;
     this.locations = new Map();
+    this.analyzedFiles = new Set();
     this.busy = false;
     this.error = null;
     this.google = new GoogleVisitService(DATA_DIR);
@@ -291,6 +296,7 @@ export class VisitAnalysisService {
     await mkdir(DATA_DIR, { recursive: true });
     this.result = await readJson(RESULT_FILE, null);
     this.rebuildLocationIndex();
+    this.rebuildAnalyzedFileIndex();
     await this.google.load();
   }
 
@@ -313,6 +319,14 @@ export class VisitAnalysisService {
   async setGooglePlacesApiKey(apiKey) { return this.google.setApiKey(apiKey); }
 
   get visits() { return this.result?.visits || []; }
+
+  get hasFileInventory() { return Array.isArray(this.result?.analyzedFileIds); }
+
+  rebuildAnalyzedFileIndex() {
+    this.analyzedFiles = new Set(this.result?.analyzedFileIds || []);
+  }
+
+  hasAnalyzedFile(file) { return this.analyzedFiles.has(analyzedFileId(file)); }
 
   rebuildLocationIndex() {
     this.locations.clear();
@@ -368,8 +382,10 @@ export class VisitAnalysisService {
           gpsLoggerTrackPoints: tracks.gpsLogger.length,
           gpsLoggerFiles: tracks.loggerFiles
         },
+        analyzedFileIds: rows.map(row => analyzedFileId(path.resolve(row.SourceFile))),
         visits
       };
+      this.rebuildAnalyzedFileIndex();
       this.rebuildLocationIndex();
       await atomicJson(RESULT_FILE, this.result);
     } catch (error) {

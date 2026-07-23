@@ -14,19 +14,28 @@ const CACHE = path.join(HERE, '.photo-cache');
 const SETTINGS = path.join(DATA, 'settings.json');
 const OLD_SETTINGS = process.env.OLD_SETTINGS_FILE || 'D:\\민욱\\remote_slides\\data\\settings.json';
 const PHOTO_ROOT = path.resolve(process.env.PHOTO_ROOT || 'D:\\민욱\\사진');
+const GPSLOGGER_DIR = path.resolve(process.env.GPSLOGGER_DIR || 'D:\\민욱\\타임라인\\GPSLogger');
+const GOOGLE_GPX = path.resolve(process.env.GPX_PATH || 'D:\\민욱\\타임라인\\google_maps\\260723\\timeline_export_1784779939485.gpx');
 const PORT = Number(process.env.PORT || 8081);
+const ANALYSIS_QUIET_MS = Math.max(1_000, Number(process.env.ANALYSIS_QUIET_MS || 5 * 60_000));
 const service = new VisitAnalysisService();
 let settings = { selectedFolders: [] };
 let manifest = { version: '', photos: [], files: new Map(), scannedAt: 0 };
 let dirty = true;
 let scanning = null;
 let watchers = [];
+let timelineWatchers = [];
+let analysisTimer = null;
+let analysisGeneration = 0;
+const pendingPhotoFiles = new Set();
+const autoAnalysis = { phase: 'idle', reason: null, lastChangeAt: null, scheduledFor: null, startedAt: null, completedAt: null, error: null };
 
 await Promise.all([mkdir(DATA, { recursive: true }), mkdir(CACHE, { recursive: true })]);
 await service.load();
 await loadSettings();
 configureWatchers();
-service.refresh().then(() => { dirty = true; }).catch(error => console.error('위치 분석 실패:', error.message));
+configureTimelineWatchers();
+if (!service.status().generatedAt || !service.hasFileInventory) scheduleAnalysis('초기 분석 상태 확인');
 
 function safeRelative(value = '') {
   const absolute = path.resolve(PHOTO_ROOT, ...String(value).replaceAll('\\', '/').split('/').filter(Boolean));
@@ -57,8 +66,51 @@ async function loadSettings() {
 function configureWatchers() {
   watchers.forEach(item => item.close()); watchers = [];
   for (const folder of settings.selectedFolders) {
-    try { watchers.push(watch(absolute(folder), { recursive: true }, () => { dirty = true; })); } catch {}
+    try { watchers.push(watch(absolute(folder), { recursive: true }, (event, filename) => {
+      dirty = true;
+      if (!filename || /\.jpe?g$/i.test(String(filename))) scheduleAnalysis('새 사진 또는 사진 변경');
+    })); } catch {}
   }
+}
+function configureTimelineWatchers() {
+  timelineWatchers.forEach(item => item.close()); timelineWatchers = [];
+  try {
+    timelineWatchers.push(watch(GPSLOGGER_DIR, { recursive: true }, (event, filename) => {
+      if (!filename || /\.gpx$/i.test(String(filename))) scheduleAnalysis('GPSLogger 변경');
+    }));
+  } catch (error) { console.warn('GPSLogger 폴더를 감시하지 못했습니다:', error.message); }
+  try {
+    timelineWatchers.push(watch(path.dirname(GOOGLE_GPX), (event, filename) => {
+      if (!filename || String(filename).toLocaleLowerCase('en-US') === path.basename(GOOGLE_GPX).toLocaleLowerCase('en-US')) scheduleAnalysis('Google 타임라인 변경');
+    }));
+  } catch (error) { console.warn('Google 타임라인을 감시하지 못했습니다:', error.message); }
+}
+function scheduleAnalysis(reason) {
+  analysisGeneration++;
+  autoAnalysis.phase = service.busy ? 'waiting-after-current' : 'waiting';
+  autoAnalysis.reason = reason;
+  autoAnalysis.lastChangeAt = Date.now();
+  autoAnalysis.scheduledFor = Date.now() + ANALYSIS_QUIET_MS;
+  autoAnalysis.error = null;
+  if (analysisTimer) clearTimeout(analysisTimer);
+  const generation = analysisGeneration;
+  analysisTimer = setTimeout(() => runScheduledAnalysis(generation), ANALYSIS_QUIET_MS);
+}
+async function runScheduledAnalysis(generation) {
+  analysisTimer = null;
+  if (service.busy) { scheduleAnalysis(autoAnalysis.reason || '분석 중 추가 변경'); return; }
+  autoAnalysis.phase = 'running'; autoAnalysis.startedAt = Date.now(); autoAnalysis.scheduledFor = null; autoAnalysis.error = null;
+  try {
+    await service.refresh({ force: true });
+    dirty = true;
+    for (const file of [...pendingPhotoFiles]) if (service.hasAnalyzedFile(file)) pendingPhotoFiles.delete(file);
+    autoAnalysis.completedAt = Date.now();
+    autoAnalysis.phase = analysisGeneration === generation ? 'idle' : 'waiting';
+  } catch (error) {
+    autoAnalysis.phase = 'error'; autoAnalysis.error = error.message;
+    console.error('자동 위치 분석 실패:', error);
+  }
+  if ((analysisGeneration !== generation || pendingPhotoFiles.size) && !analysisTimer) scheduleAnalysis(autoAnalysis.reason || '분석 중 추가 변경');
 }
 async function walk(folder, found) {
   const entries = await readdir(absolute(folder), { withFileTypes: true }).catch(() => []);
@@ -87,6 +139,11 @@ async function scan(force = false) {
         url: `/media/${file.id}?v=${file.modifiedAt}-${file.size}`, location: service.locationForFile(file.file)
       }))
     };
+    if (service.hasFileInventory) {
+      const newFiles = files.filter(file => !service.hasAnalyzedFile(file.file) && !pendingPhotoFiles.has(file.file));
+      newFiles.forEach(file => pendingPhotoFiles.add(file.file));
+      if (newFiles.length) scheduleAnalysis(`분석하지 않은 새 사진 ${newFiles.length}장 발견`);
+    }
     dirty = false; return manifest;
   })().finally(() => { scanning = null; });
   return scanning;
@@ -115,7 +172,7 @@ const server = http.createServer(async (request, response) => {
       let rootAvailable = true; try { await stat(PHOTO_ROOT); } catch { rootAvailable = false; }
       return json(response, 200, { rootName: path.basename(PHOTO_ROOT), rootPath: PHOTO_ROOT, rootAvailable, selectedFolders: settings.selectedFolders });
     }
-    if (request.method === 'GET' && url.pathname === '/api/location-status') return json(response, 200, service.locationStatus());
+    if (request.method === 'GET' && url.pathname === '/api/location-status') return json(response, 200, { ...service.locationStatus(), autoAnalysis: { ...autoAnalysis, quietSeconds: Math.round(ANALYSIS_QUIET_MS / 1000) } });
     if (request.method === 'PUT' && url.pathname === '/api/google-places') {
       const value = await body(request); const googlePlaces = await service.setGooglePlacesApiKey(value.apiKey); return json(response, 200, { googlePlaces });
     }
