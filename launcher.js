@@ -29,16 +29,26 @@ function startServer() {
   rotateLog();
   write('server starting');
   const descriptor = openSync(currentLog, 'a');
+  const stderrChunks = [];
   child = spawn(process.execPath, [path.join(here, 'server.js')], {
     cwd: here,
     windowsHide: true,
-    stdio: ['ignore', descriptor, descriptor]
+    stdio: ['ignore', descriptor, 'pipe']
   });
   closeSync(descriptor);
+  child.stderr.on('data', chunk => { stderrChunks.push(chunk.toString()); });
   child.on('error', error => write(`server spawn error: ${error.stack || error.message}`));
   child.on('exit', (code, signal) => {
     child = null;
     write(`server exited: code=${code ?? 'none'} signal=${signal ?? 'none'}`);
+    const output = stderrChunks.join('');
+    // 이미 8080 포트를 사용 중이면(기존 서버가 살아있음) 중복 띄우지 않고 조용히 종료
+    if (/EADDRINUSE/.test(output)) {
+      write('이미 8080 포트를 사용 중인 서버가 있어 종료합니다 (중복 실행 방지).');
+      stopping = true;
+      process.exit(0);
+      return;
+    }
     if (!stopping) setTimeout(startServer, 5_000);
   });
 }
