@@ -300,8 +300,9 @@ export class VisitAnalysisService {
   rebuildLocationIndex() {
     this.locations.clear();
     for (const visit of this.visits) {
+      if (visit.labelSource === 'moving') continue;
       const location = {
-        landmark: visit.newLabel || visit.oldLabel || null,
+        landmark: visit.newLabel ?? visit.oldLabel ?? null,
         latitude: visit.latitude,
         longitude: visit.longitude,
         city: null,

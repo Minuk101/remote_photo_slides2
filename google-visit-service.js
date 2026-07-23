@@ -7,9 +7,12 @@ const OLD_CANDIDATE_CACHE = process.env.OLD_GOOGLE_CACHE || 'D:\\민욱\\remote_
 const MONTHLY_LIMIT = process.env.GOOGLE_MONTHLY_LIMIT === undefined ? 4000 : Number(process.env.GOOGLE_MONTHLY_LIMIT);
 const CLUSTER_SIZE = 0.0025;
 const MAX_NEAREST_METERS = 350;
-const CACHE_SCHEMA = 3;
+const CACHE_SCHEMA = 5;
 const NON_VISITOR_TYPES = new Set(['', 'corporate_office', 'educational_institution', 'electrician', 'furniture_store', 'general_contractor', 'home_goods_store', 'home_improvement_store', 'manufacturer', 'point_of_interest', 'research_institute', 'school', 'secondary_school', 'service', 'storage', 'telecommunications_service_provider', 'wholesaler']);
 const BANNED_NAMES = /주식회사|\(주\)|가구|초등학교|중학교|고등학교|공업고등학교|물류|창고|공장|본사|사무소/;
+const LANDMARK_TYPES = new Set(['amusement_center', 'amusement_park', 'aquarium', 'art_gallery', 'art_museum', 'botanical_garden', 'concert_hall', 'cultural_landmark', 'historical_landmark', 'historical_place', 'monument', 'museum', 'national_park', 'observation_deck', 'park', 'performing_arts_theater', 'shopping_mall', 'stadium', 'tourist_attraction', 'zoo']);
+const PARENT_TYPES = new Set(['department_store', 'hotel', 'hypermarket', 'lodging', 'movie_theater', 'resort_hotel', 'train_station', 'university']);
+const MICRO_TYPES = new Set(['beauty_salon', 'convenience_store', 'hair_care', 'hair_salon', 'locksmith', 'supplier']);
 
 function monthKey() { const d = new Date(); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`; }
 function korean(value = '') { return /[가-힣]/.test(value) && !/[ぁ-んァ-ヶ一-龯]/.test(value); }
@@ -67,8 +70,16 @@ export class GoogleVisitService {
     const nearest = nearby[0]; if (!nearest) return null;
     const oldName = normalizedName(visit.oldLabel || '');
     const oldCandidate = oldName ? nearby.find(candidate => normalizedName(candidate.name) === oldName) : null;
-    if (oldCandidate && oldCandidate.distanceMeters <= Math.max(100, nearest.distanceMeters * 3)) return oldCandidate;
-    return nearest;
+    const representativeCandidates = nearby.filter(candidate => LANDMARK_TYPES.has(candidate.type) || PARENT_TYPES.has(candidate.type));
+    const nearestRepresentativeDistance = representativeCandidates[0]?.distanceMeters ?? nearest.distanceMeters;
+    const oldCandidateIsRepresentative = oldCandidate && (LANDMARK_TYPES.has(oldCandidate.type) || PARENT_TYPES.has(oldCandidate.type));
+    for (const candidate of nearby) {
+      const typeBonus = LANDMARK_TYPES.has(candidate.type) ? 300 : PARENT_TYPES.has(candidate.type) ? 210 : MICRO_TYPES.has(candidate.type) ? -140 : 0;
+      const popularityBonus = Number.isFinite(candidate.popularRank) ? Math.max(0, 120 - candidate.popularRank * 6) : 0;
+      const oldPlaceBonus = oldCandidate === candidate && oldCandidateIsRepresentative && candidate.distanceMeters <= Math.max(150, nearestRepresentativeDistance * 3) ? 180 : 0;
+      candidate.representativeScore = typeBonus + popularityBonus + oldPlaceBonus - candidate.distanceMeters * 0.7;
+    }
+    return nearby.sort((a, b) => b.representativeScore - a.representativeScore || a.distanceMeters - b.distanceMeters)[0];
   }
   cachedCandidate(visit) {
     const [latPart, lonPart] = clusterParts(visit.latitude, visit.longitude);
@@ -76,13 +87,20 @@ export class GoogleVisitService {
     for (let latOffset = -1; latOffset <= 1; latOffset++) for (let lonOffset = -1; lonOffset <= 1; lonOffset++) {
       const cluster = this.oldClusters[`${latPart + latOffset}:${lonPart + lonOffset}`];
       if (!cluster) continue;
-      candidates.push(...(cluster.distanceCandidates || []), ...(cluster.popularCandidates || []));
+      (cluster.distanceCandidates || []).forEach((candidate, rank) => candidates.push({ ...candidate, distanceRank: rank }));
+      (cluster.popularCandidates || []).forEach((candidate, rank) => candidates.push({ ...candidate, popularRank: rank }));
     }
     const unique = new Map();
     for (const candidate of candidates) {
       const usable = this.usable(candidate, visit); if (!usable) continue;
       const key = usable.placeId || usable.id || `${usable.name}:${usable.latitude.toFixed(5)}:${usable.longitude.toFixed(5)}`;
-      if (!unique.has(key) || usable.distanceMeters < unique.get(key).distanceMeters) unique.set(key, usable);
+      const existing = unique.get(key);
+      if (!existing) unique.set(key, usable);
+      else unique.set(key, {
+        ...(usable.distanceMeters < existing.distanceMeters ? usable : existing),
+        popularRank: Math.min(existing.popularRank ?? Infinity, usable.popularRank ?? Infinity),
+        distanceRank: Math.min(existing.distanceRank ?? Infinity, usable.distanceRank ?? Infinity)
+      });
     }
     return this.selectCandidate([...unique.values()], visit);
   }
@@ -104,6 +122,10 @@ export class GoogleVisitService {
     for (const visit of visits) {
       const privateName = this.privateName(visit, privatePlaces);
       if (privateName) { visit.newLabel = privateName; visit.labelSource = 'private'; continue; }
+      const durationMs = Math.max(0, visit.endTime - visit.startTime);
+      if (visit.photoCount <= 50 && visit.radiusMeters >= 600 && durationMs <= 20 * 60_000) {
+        visit.newLabel = null; visit.labelSource = 'moving'; visit.labelDistanceMeters = null; continue;
+      }
       const cached = this.cache[visit.id];
       if (cached) { Object.assign(visit, cached); continue; }
       const oldCandidate = this.cachedCandidate(visit);
