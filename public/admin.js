@@ -19,8 +19,18 @@ const elements = {
   selectedList: document.getElementById('selected-list'),
   selectedCount: document.getElementById('selected-count'),
   saveButton: document.getElementById('save-selection'),
-  saveMessage: document.getElementById('save-message')
+  saveMessage: document.getElementById('save-message'),
+  photoCount: document.getElementById('photo-count')
 };
+
+async function refreshPhotoCount() {
+  try {
+    const result = await api('/api/photos');
+    elements.photoCount.textContent = `재생 대상 ${result.photos.length.toLocaleString()}장`;
+  } catch {
+    elements.photoCount.textContent = '재생 대상 사진을 확인할 수 없습니다.';
+  }
+}
 
 async function refreshLocationStatus() {
   try {
@@ -211,6 +221,7 @@ elements.saveButton.addEventListener('click', async () => {
     renderSelected();
     await loadFolder(state.currentPath);
     elements.saveMessage.textContent = `저장했습니다. 현재 재생 대상은 ${result.photoCount.toLocaleString()}장입니다.`;
+    elements.photoCount.textContent = `재생 대상 ${result.photoCount.toLocaleString()}장`;
   } catch (error) {
     elements.saveMessage.classList.add('error');
     elements.saveMessage.textContent = error.message;
@@ -240,4 +251,6 @@ async function initialize() {
 
 initialize();
 refreshLocationStatus();
+refreshPhotoCount();
 setInterval(refreshLocationStatus, 5000);
+setInterval(refreshPhotoCount, 30000);
