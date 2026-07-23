@@ -7,6 +7,13 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { VisitAnalysisService } from './analysis-engine.js';
 
+// [안정성] 처리되지 않은 예외/거부가 서버 프로세스를 죽이지 않도록 가로채기만 합니다.
+for (const sig of ["uncaughtException", "unhandledRejection"]) {
+  process.on(sig, (error) => {
+    console.error(`[안전 가드] ${sig} 무시하고 계속 유지:`, (error && (error.stack || error.message)) || error);
+  });
+}
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
 const DATA = path.join(HERE, 'data');
@@ -168,12 +175,19 @@ async function cleanupCache() {
   for (const item of await readdir(CACHE, { withFileTypes: true }).catch(() => [])) if (item.isFile() && !keep.has(item.name) && !item.name.endsWith('.tmp')) await unlink(path.join(CACHE, item.name)).catch(() => {});
 }
 function json(response, status, value) {
-  const body = JSON.stringify(value); response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' }); response.end(body);
+  try {
+    if (!response || response.writableEnded || response.destroyed || !response.writable) return;
+    const body = JSON.stringify(value);
+    response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
+    response.end(body);
+  } catch (error) { /* 이미 닫힌 응답 등은 무시 */ }
 }
 async function body(request) { const chunks = []; for await (const chunk of request) chunks.push(chunk); return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); }
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
 
 const server = http.createServer(async (request, response) => {
+  request.on('error', () => {});
+  response.on('error', () => {});
   try {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
     if (request.method === 'GET' && url.pathname === '/api/config') {
@@ -209,7 +223,10 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname.startsWith('/media/')) return json(response, 404, { error: '사진을 찾을 수 없습니다.' });
     const requested = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
     const file = path.resolve(PUBLIC, requested); if (!file.startsWith(PUBLIC)) return json(response, 403, { error: '접근할 수 없습니다.' });
-    const content = await readFile(file); response.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'application/octet-stream' }); response.end(content);
+    let content;
+    try { content = await readFile(file); }
+    catch { return json(response, 404, { error: '파일을 찾을 수 없습니다.' }); }
+    response.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'application/octet-stream' }); response.end(content);
   } catch (error) { if (error.code !== 'ENOENT') console.error(error); json(response, error.code === 'ENOENT' ? 404 : 500, { error: error.message }); }
 });
 server.listen(PORT, '0.0.0.0', () => console.log(`Remote Photo Slides 2: http://localhost:${PORT}`));
