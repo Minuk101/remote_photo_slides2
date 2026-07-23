@@ -232,6 +232,7 @@ function makeVisits(photos) {
 export class VisitAnalysisService {
   constructor() {
     this.result = null;
+    this.locations = new Map();
     this.busy = false;
     this.error = null;
     this.google = new GoogleVisitService(DATA_DIR);
@@ -240,6 +241,7 @@ export class VisitAnalysisService {
   async load() {
     await mkdir(DATA_DIR, { recursive: true });
     this.result = await readJson(RESULT_FILE, null);
+    this.rebuildLocationIndex();
     await this.google.load();
   }
 
@@ -249,7 +251,19 @@ export class VisitAnalysisService {
 
   get visits() { return this.result?.visits || []; }
 
+  rebuildLocationIndex() {
+    this.locations.clear();
+    for (const visit of this.visits) {
+      const location = { name: visit.newLabel || visit.oldLabel || null, latitude: visit.latitude, longitude: visit.longitude, source: visit.labelSource, radiusMeters: visit.radiusMeters };
+      for (const photo of visit.photos) this.locations.set(normalizeFile(photo.file), location);
+    }
+  }
+
   photoFile(visitId, index) { return this.visits.find(v => v.id === visitId)?.photos?.[index]?.file || null; }
+
+  locationForFile(file) {
+    return this.locations.get(normalizeFile(file)) || null;
+  }
 
   async refresh({ force = false } = {}) {
     if (this.busy) return;
@@ -283,6 +297,7 @@ export class VisitAnalysisService {
         },
         visits
       };
+      this.rebuildLocationIndex();
       await atomicJson(RESULT_FILE, this.result);
     } catch (error) {
       this.error = error.stack || error.message;

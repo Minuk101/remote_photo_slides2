@@ -1,5 +1,6 @@
 node_modules/
 data/
 .cache/
+.photo-cache/
 .thumb-cache/
 npm-debug.log*

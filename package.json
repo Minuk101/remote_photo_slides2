@@ -1,8 +1,8 @@
 {
-  "name": "timeline-visit-analyzer",
+  "name": "remote-photo-slides2",
   "version": "1.0.0",
   "private": true,
-  "description": "GPX timeline visit analyzer for local photo collections",
+  "description": "Local-network photo slideshow with visit-aware timeline locations",
   "type": "module",
   "scripts": {
     "start": "node server.js",

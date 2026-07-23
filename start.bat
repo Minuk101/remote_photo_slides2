@@ -1,5 +1,5 @@
 @echo off
 cd /d "%~dp0"
-title Timeline Visit Analyzer
+title Remote Photo Slides 2
 npm start
 pause
