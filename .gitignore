@@ -1,0 +1,5 @@
+node_modules/
+data/
+.cache/
+.thumb-cache/
+npm-debug.log*

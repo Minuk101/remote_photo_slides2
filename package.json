@@ -1,0 +1,18 @@
+{
+  "name": "timeline-visit-analyzer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "GPX timeline visit analyzer for local photo collections",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "analyze": "node analyze.js",
+    "check": "node --check server.js && node --check analyze.js && node --check analysis-engine.js && node --check google-visit-service.js && node --check public/app.js"
+  },
+  "dependencies": {
+    "sharp": "^0.35.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
