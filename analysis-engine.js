@@ -76,6 +76,34 @@ function analyzedFileId(file) {
   return crypto.createHash('sha1').update(normalizeFile(file)).digest('hex').slice(0, 20);
 }
 
+async function reverseGeocodeNominatim(latitude, longitude) {
+  const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&accept-language=ko&zoom=10`;
+  const response = await fetch(url, { headers: { 'User-Agent': 'RemotePhotoSlides/2.0' } });
+  if (!response.ok) throw new Error(`Nominatim ${response.status}`);
+  const body = await response.json();
+  const addr = body.address || {};
+  return {
+    city: addr.city || addr.town || addr.municipality || addr.county || addr.state || null,
+    country: addr.country || null
+  };
+}
+
+async function enrichVisitsWithCity(visits) {
+  for (const visit of visits) {
+    if (visit.labelSource === 'moving') continue;
+    if (visit.adminCity !== undefined && visit.adminCountry !== undefined) continue;
+    try {
+      const geo = await reverseGeocodeNominatim(visit.latitude, visit.longitude);
+      visit.adminCity = geo.city;
+      visit.adminCountry = geo.country;
+    } catch {
+      visit.adminCity = null;
+      visit.adminCountry = null;
+    }
+    await new Promise(r => setTimeout(r, 1100));
+  }
+}
+
 async function readJson(file, fallback) {
   try { return JSON.parse(await readFile(file, 'utf8')); } catch { return fallback; }
 }
@@ -336,8 +364,8 @@ export class VisitAnalysisService {
         landmark: visit.newLabel ?? visit.oldLabel ?? null,
         latitude: visit.latitude,
         longitude: visit.longitude,
-        city: null,
-        country: null,
+        city: visit.adminCity ?? null,
+        country: visit.adminCountry ?? null,
         landmarkDistanceMeters: null,
         landmarkSource: visit.labelSource?.startsWith('google-visit') ? 'google' : 'timeline',
         visitRadiusMeters: visit.radiusMeters
@@ -370,6 +398,7 @@ export class VisitAnalysisService {
       }).filter(photo => photo.time);
       const visits = makeVisits(photos);
       await this.google.resolve(visits, privatePlaces.places || []);
+      await enrichVisitsWithCity(visits);
       this.result = {
         schema: 1,
         generatedAt: Date.now(),
@@ -401,6 +430,7 @@ export class VisitAnalysisService {
       const privatePlaces = await readJson(PRIVATE_PLACES, { places: [] });
       for (const visit of this.visits) { delete visit.newLabel; delete visit.labelSource; delete visit.labelDistanceMeters; delete visit.labelError; }
       await this.google.resolve(this.visits, privatePlaces.places || []);
+      await enrichVisitsWithCity(this.visits);
       this.result.generatedAt = Date.now();
       this.rebuildLocationIndex();
       await atomicJson(RESULT_FILE, this.result);

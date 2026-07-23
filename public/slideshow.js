@@ -234,13 +234,12 @@ function showLocation(location) {
   if (!location?.latitude || !location?.longitude) return;
 
   const distance = formatDistance(location.landmarkDistanceMeters);
-  locationPrimary.textContent = location.landmark
-    ? `${location.landmark}${distance ? `에서 약 ${distance}` : ''}`
-    : (location.city || location.country || '사진 위치');
+  const parts = [location.landmark, location.city, location.country].filter(Boolean);
+  locationPrimary.textContent = parts.length > 0
+    ? `${parts.join(', ')}${distance ? ` · 약 ${distance}` : ''}`
+    : '사진 위치';
   const landmarkCredit = location.landmarkSource === 'google' ? 'Google 제공' : '';
-  locationSecondary.textContent = location.landmark
-    ? [[location.city, location.country].filter(Boolean).join(', '), landmarkCredit].filter(Boolean).join(' · ')
-    : (location.city && location.country ? location.country : '눌러서 지도에서 보기');
+  locationSecondary.textContent = landmarkCredit || '눌러서 지도에서 보기';
   locationCard.href = `https://www.google.com/maps/search/?api=1&query=${location.latitude},${location.longitude}`;
   requestAnimationFrame(() => locationCard.classList.add('visible'));
   locationTimer = setTimeout(() => locationCard.classList.remove('visible'), 4200);
