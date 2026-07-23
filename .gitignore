@@ -3,4 +3,5 @@ data/
 .cache/
 .photo-cache/
 .thumb-cache/
+logs/
 npm-debug.log*

@@ -8,7 +8,7 @@
     "start": "node server.js",
     "analyze": "node analyze.js",
     "relabel": "node analyze.js --labels-only",
-    "check": "node --check server.js && node --check analyze.js && node --check analysis-engine.js && node --check google-visit-service.js && node --check public/admin.js && node --check public/slideshow.js"
+    "check": "node --check launcher.js && node --check server.js && node --check analyze.js && node --check analysis-engine.js && node --check google-visit-service.js && node --check public/admin.js && node --check public/slideshow.js"
   },
   "dependencies": {
     "sharp": "^0.35.3"

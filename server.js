@@ -16,7 +16,7 @@ const OLD_SETTINGS = process.env.OLD_SETTINGS_FILE || 'D:\\민욱\\remote_slides
 const PHOTO_ROOT = path.resolve(process.env.PHOTO_ROOT || 'D:\\민욱\\사진');
 const GPSLOGGER_DIR = path.resolve(process.env.GPSLOGGER_DIR || 'D:\\민욱\\타임라인\\GPSLogger');
 const GOOGLE_GPX = path.resolve(process.env.GPX_PATH || 'D:\\민욱\\타임라인\\google_maps\\260723\\timeline_export_1784779939485.gpx');
-const PORT = Number(process.env.PORT || 8081);
+const PORT = Number(process.env.PORT || 8080);
 const ANALYSIS_QUIET_MS = Math.max(1_000, Number(process.env.ANALYSIS_QUIET_MS || 5 * 60_000));
 const service = new VisitAnalysisService();
 let settings = { selectedFolders: [] };
@@ -66,23 +66,31 @@ async function loadSettings() {
 function configureWatchers() {
   watchers.forEach(item => item.close()); watchers = [];
   for (const folder of settings.selectedFolders) {
-    try { watchers.push(watch(absolute(folder), { recursive: true }, (event, filename) => {
+    try {
+      const watcher = watch(absolute(folder), { recursive: true }, (event, filename) => {
       dirty = true;
       if (!filename || /\.jpe?g$/i.test(String(filename))) scheduleAnalysis('새 사진 또는 사진 변경');
-    })); } catch {}
+      });
+      watcher.on('error', error => console.warn(`사진 폴더 감시 오류 (${folder}):`, error.message));
+      watchers.push(watcher);
+    } catch (error) { console.warn(`사진 폴더를 감시하지 못했습니다 (${folder}):`, error.message); }
   }
 }
 function configureTimelineWatchers() {
   timelineWatchers.forEach(item => item.close()); timelineWatchers = [];
   try {
-    timelineWatchers.push(watch(GPSLOGGER_DIR, { recursive: true }, (event, filename) => {
+    const watcher = watch(GPSLOGGER_DIR, { recursive: true }, (event, filename) => {
       if (!filename || /\.gpx$/i.test(String(filename))) scheduleAnalysis('GPSLogger 변경');
-    }));
+    });
+    watcher.on('error', error => console.warn('GPSLogger 폴더 감시 오류:', error.message));
+    timelineWatchers.push(watcher);
   } catch (error) { console.warn('GPSLogger 폴더를 감시하지 못했습니다:', error.message); }
   try {
-    timelineWatchers.push(watch(path.dirname(GOOGLE_GPX), (event, filename) => {
+    const watcher = watch(path.dirname(GOOGLE_GPX), (event, filename) => {
       if (!filename || String(filename).toLocaleLowerCase('en-US') === path.basename(GOOGLE_GPX).toLocaleLowerCase('en-US')) scheduleAnalysis('Google 타임라인 변경');
-    }));
+    });
+    watcher.on('error', error => console.warn('Google 타임라인 감시 오류:', error.message));
+    timelineWatchers.push(watcher);
   } catch (error) { console.warn('Google 타임라인을 감시하지 못했습니다:', error.message); }
 }
 function scheduleAnalysis(reason) {
@@ -195,11 +203,14 @@ const server = http.createServer(async (request, response) => {
     const media = url.pathname.match(/^\/media\/([a-f0-9]+)$/);
     if (request.method === 'GET' && media) {
       await scan(); const file = manifest.files.get(media[1]); if (!file) return json(response, 404, { error: '사진을 찾을 수 없습니다.' });
-      const target = await playbackFile(file); response.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=31536000, immutable' }); return createReadStream(target).pipe(response);
+      const target = await playbackFile(file); response.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=31536000, immutable' });
+      const stream = createReadStream(target); stream.on('error', error => { console.warn('재생 이미지 읽기 오류:', error.message); response.destroy(error); }); return stream.pipe(response);
     }
+    if (request.method === 'GET' && url.pathname.startsWith('/media/')) return json(response, 404, { error: '사진을 찾을 수 없습니다.' });
     const requested = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
     const file = path.resolve(PUBLIC, requested); if (!file.startsWith(PUBLIC)) return json(response, 403, { error: '접근할 수 없습니다.' });
     const content = await readFile(file); response.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'application/octet-stream' }); response.end(content);
-  } catch (error) { console.error(error); json(response, error.code === 'ENOENT' ? 404 : 500, { error: error.message }); }
+  } catch (error) { if (error.code !== 'ENOENT') console.error(error); json(response, error.code === 'ENOENT' ? 404 : 500, { error: error.message }); }
 });
 server.listen(PORT, '0.0.0.0', () => console.log(`Remote Photo Slides 2: http://localhost:${PORT}`));
+server.on('error', error => { console.error('HTTP 서버 오류:', error); setTimeout(() => process.exit(1), 100); });

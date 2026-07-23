@@ -22,16 +22,18 @@
 - Google 타임라인: `D:\민욱\타임라인\google_maps\260723\timeline_export_1784779939485.gpx`
 - GPSLogger: `D:\민욱\타임라인\GPSLogger`
 - 기존 폴더 선택 설정: `D:\민욱\remote_slides\data\settings.json`
-- 주소: `http://localhost:8081`
+- 주소: `http://localhost:8080`
 
 ## 실행
 
 `start.bat`을 실행합니다. 처음 한 번은 사진 촬영 시각을 읽고 이동 기록과 맞추므로 시간이 걸립니다. 이후 분석 결과와 재생 이미지는 로컬 캐시에 저장됩니다.
 
+`start.bat`은 서버가 예기치 않게 종료되면 5초 후 자동으로 다시 실행합니다. 종료 원인은 `logs\server.log`에 기록되며 로그가 5MB를 넘으면 이전 로그 한 개만 보관합니다.
+
 다른 기기에서는 PC의 내부 IP 주소에 `:8081`을 붙여 접속합니다.
 
 ```text
-http://192.168.x.x:8081
+http://192.168.x.x:8080
 ```
 
 경로와 포트는 환경 변수 `PHOTO_ROOT`, `PHOTO_ROOTS`, `GPX_PATH`, `GPSLOGGER_DIR`, `PORT`로 변경할 수 있습니다. 자동 분석 대기 시간은 `ANALYSIS_QUIET_MS`로 변경하며 기본값은 300,000ms(5분)입니다.
