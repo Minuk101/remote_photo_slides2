@@ -101,12 +101,28 @@ async function parseGpxFile(file, source) {
     .filter(Boolean);
 }
 
+function removeTrackSpikes(points) {
+  if (points.length < 3) return points;
+  const sorted = [...points].sort((a, b) => a.time - b.time);
+  return sorted.filter((point, index) => {
+    const before = sorted[index - 1], after = sorted[index + 1];
+    if (!before || !after) return true;
+    const beforeSeconds = (point.time - before.time) / 1000;
+    const afterSeconds = (after.time - point.time) / 1000;
+    if (beforeSeconds <= 0 || afterSeconds <= 0 || beforeSeconds > 10 * 60 || afterSeconds > 10 * 60) return true;
+    const incomingSpeed = distanceKm(before, point) * 1000 / beforeSeconds;
+    const outgoingSpeed = distanceKm(point, after) * 1000 / afterSeconds;
+    const directSpeed = distanceKm(before, after) * 1000 / (beforeSeconds + afterSeconds);
+    return !(incomingSpeed > 90 && outgoingSpeed > 90 && directSpeed < 50);
+  });
+}
+
 async function loadTracks() {
   const google = await parseGpxFile(GOOGLE_GPX, 'google-timeline').catch(() => []);
   const loggerFiles = (await readdir(GPSLOGGER_DIR, { withFileTypes: true }).catch(() => []))
     .filter(item => item.isFile() && item.name.toLowerCase().endsWith('.gpx'))
     .map(item => path.join(GPSLOGGER_DIR, item.name));
-  const gpsLogger = (await Promise.all(loggerFiles.map(file => parseGpxFile(file, 'gpslogger').catch(() => [])))).flat();
+  const gpsLogger = (await Promise.all(loggerFiles.map(async file => removeTrackSpikes(await parseGpxFile(file, 'gpslogger').catch(() => []))))).flat();
   const quality = point => point.source !== 'gpslogger' ? 1 : point.provider === 'gps' ? 3 : 2;
   const all = [...google, ...gpsLogger].sort((a, b) => a.time - b.time || quality(b) - quality(a));
   return { all, google, gpsLogger, gpsLoggerGps: gpsLogger.filter(point => point.provider === 'gps'), loggerFiles: loggerFiles.length };
@@ -145,8 +161,9 @@ function chooseTimelinePosition(tracks, time) {
   const loggerGpsValue = estimateFrom(tracks.gpsLoggerGps, time, 8 * 60_000, 'gpslogger-gps');
   if (loggerGpsValue) return loggerGpsValue;
   const loggerValue = estimateFrom(tracks.gpsLogger, time, 5 * 60_000, 'gpslogger-network');
-  if (loggerValue) return loggerValue;
-  return estimateFrom(tracks.google, time, 30 * 60_000, 'google-timeline');
+  const googleValue = estimateFrom(tracks.google, time, 30 * 60_000, 'google-timeline');
+  if (loggerValue && googleValue && distanceKm(loggerValue, googleValue) > 1) return googleValue;
+  return loggerValue || googleValue;
 }
 
 async function listJpegs(roots) {

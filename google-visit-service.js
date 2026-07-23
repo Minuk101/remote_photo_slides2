@@ -7,8 +7,8 @@ const OLD_CANDIDATE_CACHE = process.env.OLD_GOOGLE_CACHE || 'D:\\민욱\\remote_
 const MONTHLY_LIMIT = process.env.GOOGLE_MONTHLY_LIMIT === undefined ? 4000 : Number(process.env.GOOGLE_MONTHLY_LIMIT);
 const CLUSTER_SIZE = 0.0025;
 const MAX_NEAREST_METERS = 350;
-const CACHE_SCHEMA = 5;
-const NON_VISITOR_TYPES = new Set(['', 'corporate_office', 'educational_institution', 'electrician', 'furniture_store', 'general_contractor', 'home_goods_store', 'home_improvement_store', 'manufacturer', 'point_of_interest', 'research_institute', 'school', 'secondary_school', 'service', 'storage', 'telecommunications_service_provider', 'wholesaler']);
+const CACHE_SCHEMA = 6;
+const NON_VISITOR_TYPES = new Set(['', 'building_materials_store', 'corporate_office', 'educational_institution', 'electrician', 'furniture_store', 'general_contractor', 'hardware_store', 'home_goods_store', 'home_improvement_store', 'manufacturer', 'point_of_interest', 'research_institute', 'school', 'secondary_school', 'service', 'storage', 'telecommunications_service_provider', 'wholesaler']);
 const BANNED_NAMES = /주식회사|\(주\)|가구|초등학교|중학교|고등학교|공업고등학교|물류|창고|공장|본사|사무소/;
 const LANDMARK_TYPES = new Set(['amusement_center', 'amusement_park', 'aquarium', 'art_gallery', 'art_museum', 'botanical_garden', 'concert_hall', 'cultural_landmark', 'historical_landmark', 'historical_place', 'monument', 'museum', 'national_park', 'observation_deck', 'park', 'performing_arts_theater', 'shopping_mall', 'stadium', 'tourist_attraction', 'zoo']);
 const PARENT_TYPES = new Set(['department_store', 'hotel', 'hypermarket', 'lodging', 'movie_theater', 'resort_hotel', 'train_station', 'university']);

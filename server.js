@@ -78,7 +78,7 @@ async function scan(force = false) {
     const found = new Map();
     for (const folder of settings.selectedFolders) await walk(folder, found);
     const files = [...found.values()].sort((a, b) => compare(a.relative, b.relative));
-    const version = crypto.createHash('sha1').update(files.map(file => `${file.relative}:${file.modifiedAt}:${file.size}`).join('\n')).digest('hex').slice(0, 16);
+    const version = crypto.createHash('sha1').update(files.map(file => `${file.relative}:${file.modifiedAt}:${file.size}:${JSON.stringify(service.locationForFile(file.file))}`).join('\n')).digest('hex').slice(0, 16);
     manifest = {
       version, scannedAt: Date.now(), files: new Map(files.map(file => [file.id, file])),
       photos: files.map(file => ({
