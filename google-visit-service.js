@@ -3,10 +3,18 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 
 const ENDPOINT = 'https://places.googleapis.com/v1/places:searchNearby';
 const OLD_CONFIG = process.env.OLD_GOOGLE_CONFIG || 'D:\\민욱\\remote_slides\\data\\locations\\google-places-config.json';
+const OLD_CANDIDATE_CACHE = process.env.OLD_GOOGLE_CACHE || 'D:\\민욱\\remote_slides\\data\\locations\\google-places-cache.json';
 const MONTHLY_LIMIT = process.env.GOOGLE_MONTHLY_LIMIT === undefined ? 4000 : Number(process.env.GOOGLE_MONTHLY_LIMIT);
+const CLUSTER_SIZE = 0.0025;
+const MAX_NEAREST_METERS = 350;
+const CACHE_SCHEMA = 3;
+const NON_VISITOR_TYPES = new Set(['', 'corporate_office', 'educational_institution', 'electrician', 'furniture_store', 'general_contractor', 'home_goods_store', 'home_improvement_store', 'manufacturer', 'point_of_interest', 'research_institute', 'school', 'secondary_school', 'service', 'storage', 'telecommunications_service_provider', 'wholesaler']);
+const BANNED_NAMES = /주식회사|\(주\)|가구|초등학교|중학교|고등학교|공업고등학교|물류|창고|공장|본사|사무소/;
 
 function monthKey() { const d = new Date(); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`; }
 function korean(value = '') { return /[가-힣]/.test(value) && !/[ぁ-んァ-ヶ一-龯]/.test(value); }
+function normalizedName(value = '') { return value.normalize('NFKC').toLowerCase().replace(/[^0-9a-z가-힣]/g, ''); }
+function clusterParts(latitude, longitude) { return [Math.floor((latitude + 90) / CLUSTER_SIZE), Math.floor((longitude + 180) / CLUSTER_SIZE)]; }
 function distanceKm(a, b) {
   const r = Math.PI / 180, dLat = (b.latitude - a.latitude) * r, dLon = (b.longitude - a.longitude) * r;
   const q = Math.sin(dLat / 2) ** 2 + Math.cos(a.latitude * r) * Math.cos(b.latitude * r) * Math.sin(dLon / 2) ** 2;
@@ -18,12 +26,18 @@ export class GoogleVisitService {
     this.configFile = path.join(dataDir, 'google-places-config.json');
     this.cacheFile = path.join(dataDir, 'google-visit-cache.json');
     this.cache = {};
+    this.oldClusters = {};
     this.usage = {};
     this.apiKey = process.env.GOOGLE_PLACES_API_KEY || '';
   }
   async load() {
     await mkdir(path.dirname(this.cacheFile), { recursive: true });
-    try { const value = JSON.parse(await readFile(this.cacheFile, 'utf8')); this.cache = value.cache || {}; this.usage = value.usage || {}; } catch {}
+    try { const value = JSON.parse(await readFile(this.cacheFile, 'utf8')); this.cache = value.schema === CACHE_SCHEMA ? (value.cache || {}) : {}; this.usage = value.usage || {}; } catch {}
+    try {
+      const old = JSON.parse(await readFile(OLD_CANDIDATE_CACHE, 'utf8'));
+      this.oldClusters = old.clusters || {};
+      if (this.usage[monthKey()] === undefined && old.usage?.[monthKey()] !== undefined) this.usage[monthKey()] = Number(old.usage[monthKey()] || 0);
+    } catch {}
     if (!this.apiKey) { try { this.apiKey = JSON.parse(await readFile(this.configFile, 'utf8')).apiKey || ''; } catch {} }
     if (!this.apiKey) { try { this.apiKey = JSON.parse(await readFile(OLD_CONFIG, 'utf8')).apiKey || ''; } catch {} }
   }
@@ -36,25 +50,55 @@ export class GoogleVisitService {
     await rename(temp, this.configFile);
     return this.status();
   }
-  async save() { const temp = `${this.cacheFile}.tmp`; await writeFile(temp, `${JSON.stringify({ cache: this.cache, usage: this.usage })}\n`); await rename(temp, this.cacheFile); }
+  async save() { const temp = `${this.cacheFile}.tmp`; await writeFile(temp, `${JSON.stringify({ schema: CACHE_SCHEMA, cache: this.cache, usage: this.usage })}\n`); await rename(temp, this.cacheFile); }
   privateName(visit, places) {
     return places.map(place => ({ place, km: distanceKm(visit, place) })).filter(x => x.km * 1000 <= Number(x.place.radiusMeters || 0)).sort((a, b) => a.km - b.km)[0]?.place?.name || null;
+  }
+  usable(candidate, visit) {
+    const name = candidate.name || candidate.displayName?.text || '';
+    const type = candidate.type || candidate.primaryType || '';
+    const latitude = Number(candidate.latitude ?? candidate.location?.latitude);
+    const longitude = Number(candidate.longitude ?? candidate.location?.longitude);
+    if (!korean(name) || BANNED_NAMES.test(name) || NON_VISITOR_TYPES.has(type) || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+    return { ...candidate, name, type, latitude, longitude, distanceMeters: Math.round(distanceKm(visit, { latitude, longitude }) * 1000) };
+  }
+  selectCandidate(candidates, visit) {
+    const nearby = candidates.filter(candidate => candidate.distanceMeters <= MAX_NEAREST_METERS).sort((a, b) => a.distanceMeters - b.distanceMeters);
+    const nearest = nearby[0]; if (!nearest) return null;
+    const oldName = normalizedName(visit.oldLabel || '');
+    const oldCandidate = oldName ? nearby.find(candidate => normalizedName(candidate.name) === oldName) : null;
+    if (oldCandidate && oldCandidate.distanceMeters <= Math.max(100, nearest.distanceMeters * 3)) return oldCandidate;
+    return nearest;
+  }
+  cachedCandidate(visit) {
+    const [latPart, lonPart] = clusterParts(visit.latitude, visit.longitude);
+    const candidates = [];
+    for (let latOffset = -1; latOffset <= 1; latOffset++) for (let lonOffset = -1; lonOffset <= 1; lonOffset++) {
+      const cluster = this.oldClusters[`${latPart + latOffset}:${lonPart + lonOffset}`];
+      if (!cluster) continue;
+      candidates.push(...(cluster.distanceCandidates || []), ...(cluster.popularCandidates || []));
+    }
+    const unique = new Map();
+    for (const candidate of candidates) {
+      const usable = this.usable(candidate, visit); if (!usable) continue;
+      const key = usable.placeId || usable.id || `${usable.name}:${usable.latitude.toFixed(5)}:${usable.longitude.toFixed(5)}`;
+      if (!unique.has(key) || usable.distanceMeters < unique.get(key).distanceMeters) unique.set(key, usable);
+    }
+    return this.selectCandidate([...unique.values()], visit);
   }
   async search(visit) {
     const response = await fetch(ENDPOINT, {
       method: 'POST', signal: AbortSignal.timeout(20_000),
       headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': this.apiKey, 'X-Goog-FieldMask': 'places.id,places.displayName,places.location,places.primaryType,places.userRatingCount' },
-      body: JSON.stringify({ languageCode: 'ko', maxResultCount: 20, rankPreference: 'POPULARITY', locationRestriction: { circle: { center: { latitude: visit.latitude, longitude: visit.longitude }, radius: Math.max(300, Math.min(800, visit.radiusMeters + 300)) } } })
+      body: JSON.stringify({ languageCode: 'ko', maxResultCount: 20, rankPreference: 'DISTANCE', locationRestriction: { circle: { center: { latitude: visit.latitude, longitude: visit.longitude }, radius: Math.max(300, Math.min(800, visit.radiusMeters + 300)) } } })
     });
     if (!response.ok) throw new Error(`Google Places ${response.status}`);
     const body = await response.json();
     const candidates = (body.places || []).map(place => ({
       id: place.id, name: place.displayName?.text || '', type: place.primaryType || '', ratings: place.userRatingCount || 0,
       latitude: place.location?.latitude, longitude: place.location?.longitude
-    })).filter(place => korean(place.name) && Number.isFinite(place.latitude));
-    const banned = /주식회사|가구|초등학교|중학교|고등학교|공업고등학교|물류|창고/;
-    const usable = candidates.filter(place => !banned.test(place.name)).map(place => ({ ...place, distanceMeters: Math.round(distanceKm(visit, place) * 1000) }));
-    return usable.find(place => place.distanceMeters <= 40) || usable.filter(place => place.distanceMeters <= 350).sort((a, b) => (b.ratings || 0) - (a.ratings || 0))[0] || null;
+    }));
+    return this.selectCandidate(candidates.map(place => this.usable(place, visit)).filter(Boolean), visit);
   }
   async resolve(visits, privatePlaces) {
     for (const visit of visits) {
@@ -62,16 +106,22 @@ export class GoogleVisitService {
       if (privateName) { visit.newLabel = privateName; visit.labelSource = 'private'; continue; }
       const cached = this.cache[visit.id];
       if (cached) { Object.assign(visit, cached); continue; }
+      const oldCandidate = this.cachedCandidate(visit);
+      if (oldCandidate) {
+        const value = { newLabel: oldCandidate.name, labelSource: 'google-visit-cache', labelDistanceMeters: oldCandidate.distanceMeters };
+        Object.assign(visit, value); this.cache[visit.id] = value; continue;
+      }
       if (!this.apiKey || Number(this.usage[monthKey()] || 0) >= MONTHLY_LIMIT) {
-        visit.newLabel = visit.oldLabel; visit.labelSource = 'old-majority'; continue;
+        visit.newLabel = visit.oldLabel; visit.labelSource = 'legacy-fallback'; continue;
       }
       this.usage[monthKey()] = Number(this.usage[monthKey()] || 0) + 1;
       try {
         const place = await this.search(visit);
-        const value = place ? { newLabel: place.name, labelSource: 'google-visit', labelDistanceMeters: place.distanceMeters } : { newLabel: visit.oldLabel, labelSource: 'old-majority' };
+        const value = place ? { newLabel: place.name, labelSource: 'google-visit', labelDistanceMeters: place.distanceMeters } : { newLabel: visit.oldLabel, labelSource: 'legacy-fallback' };
         Object.assign(visit, value); this.cache[visit.id] = value;
-      } catch (error) { visit.newLabel = visit.oldLabel; visit.labelSource = 'old-majority'; visit.labelError = error.message; }
+      } catch (error) { visit.newLabel = visit.oldLabel; visit.labelSource = 'legacy-fallback'; visit.labelError = error.message; }
       await this.save();
     }
+    await this.save();
   }
 }

@@ -34,6 +34,40 @@ function median(values) {
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
+const POSITION_WEIGHTS = {
+  'embedded-corrected': 8,
+  embedded: 6,
+  'gpslogger-gps': 5,
+  'google-timeline': 3,
+  'embedded-from-old-timeline': 2,
+  'gpslogger-network': 1
+};
+
+function weightedMedian(items, getter) {
+  const sorted = items.map(item => ({ value: getter(item), weight: POSITION_WEIGHTS[item.position.source] || 1 })).filter(item => Number.isFinite(item.value)).sort((a, b) => a.value - b.value);
+  const half = sorted.reduce((sum, item) => sum + item.weight, 0) / 2;
+  let total = 0;
+  for (const item of sorted) { total += item.weight; if (total >= half) return item.value; }
+  return sorted.at(-1)?.value ?? null;
+}
+
+function visitCenter(photos) {
+  const preliminary = {
+    latitude: weightedMedian(photos, photo => photo.position.latitude),
+    longitude: weightedMedian(photos, photo => photo.position.longitude)
+  };
+  const distances = photos.map(photo => distanceKm(photo.position, preliminary) * 1000);
+  const typicalDistance = median(distances) || 0;
+  const cutoff = Math.max(80, Math.min(1000, typicalDistance * 3 + 30));
+  const inliers = photos.filter(photo => distanceKm(photo.position, preliminary) * 1000 <= cutoff);
+  const selected = inliers.length >= Math.max(2, Math.ceil(photos.length * 0.4)) ? inliers : photos;
+  return {
+    latitude: weightedMedian(selected, photo => photo.position.latitude),
+    longitude: weightedMedian(selected, photo => photo.position.longitude),
+    inlierCount: selected.length
+  };
+}
+
 function normalizeFile(value) {
   return path.resolve(value || '').replaceAll('/', '\\').toLocaleLowerCase('en-US');
 }
@@ -198,13 +232,10 @@ function makeVisits(photos) {
     const current = groups.at(-1);
     const previous = current?.photos.at(-1);
     const split = !current || photo.time - previous.time > MAX_PHOTO_GAP_MS || distanceKm(photo.position, current.center) > MAX_VISIT_DISTANCE_KM;
-    if (split) groups.push({ photos: [photo], center: { latitude: photo.position.latitude, longitude: photo.position.longitude } });
+    if (split) groups.push({ photos: [photo], center: { latitude: photo.position.latitude, longitude: photo.position.longitude, inlierCount: 1 } });
     else {
       current.photos.push(photo);
-      current.center = {
-        latitude: median(current.photos.map(item => item.position.latitude)),
-        longitude: median(current.photos.map(item => item.position.longitude))
-      };
+      current.center = visitCenter(current.photos);
     }
   }
   return groups.map((group, index) => {
@@ -221,6 +252,7 @@ function makeVisits(photos) {
       latitude: group.center.latitude,
       longitude: group.center.longitude,
       radiusMeters: Math.round(distances[Math.floor(distances.length * 0.95)] || 0),
+      centerPointCount: group.center.inlierCount || group.photos.length,
       photoCount: group.photos.length,
       oldLabel,
       sources,
@@ -275,7 +307,7 @@ export class VisitAnalysisService {
         city: null,
         country: null,
         landmarkDistanceMeters: null,
-        landmarkSource: visit.labelSource === 'google-visit' ? 'google' : 'timeline',
+        landmarkSource: visit.labelSource?.startsWith('google-visit') ? 'google' : 'timeline',
         visitRadiusMeters: visit.radiusMeters
       };
       for (const photo of visit.photos) this.locations.set(normalizeFile(photo.file), location);
@@ -326,6 +358,20 @@ export class VisitAnalysisService {
       this.error = error.stack || error.message;
       throw error;
     } finally { this.busy = false; }
+  }
+
+  async refreshLabels() {
+    if (!this.result || this.busy) return;
+    this.busy = true; this.error = null;
+    try {
+      const privatePlaces = await readJson(PRIVATE_PLACES, { places: [] });
+      for (const visit of this.visits) { delete visit.newLabel; delete visit.labelSource; delete visit.labelDistanceMeters; delete visit.labelError; }
+      await this.google.resolve(this.visits, privatePlaces.places || []);
+      this.result.generatedAt = Date.now();
+      this.rebuildLocationIndex();
+      await atomicJson(RESULT_FILE, this.result);
+    } catch (error) { this.error = error.stack || error.message; throw error; }
+    finally { this.busy = false; }
   }
 }
 
