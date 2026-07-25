@@ -151,8 +151,27 @@ async function getPhotoBlob(photo) {
       return cached.blob;
     }
 
-    const response = await fetch(photo.url, { cache: 'force-cache' });
-    if (!response.ok) throw new Error(`사진 다운로드 실패: ${response.status}`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    let response;
+    try {
+      response = await fetch(photo.url, { cache: 'force-cache', signal: controller.signal });
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
+      if (cached && cached.blob) {
+        rememberBlob(photo.id, cached.blob);
+        return cached.blob;
+      }
+      throw fetchError;
+    }
+    clearTimeout(timeoutId);
+    if (!response.ok) {
+      if (cached && cached.blob) {
+        rememberBlob(photo.id, cached.blob);
+        return cached.blob;
+      }
+      throw new Error(`사진 다운로드 실패: ${response.status}`);
+    }
     const blob = await response.blob();
     rememberBlob(photo.id, blob);
     await dbPut({ id: photo.id, version, blob, size: blob.size, lastAccess: Date.now() });
@@ -287,6 +306,12 @@ function scheduleNext(delay = SLIDE_INTERVAL_MS) {
 async function advanceSlide() {
   if (advancing || photos.length === 0) return;
   advancing = true;
+  const stuckGuard = setTimeout(() => {
+    if (advancing) {
+      advancing = false;
+      scheduleNext(RETRY_INTERVAL_MS);
+    }
+  }, 8000);
   let photo;
   try {
     refillQueue();
@@ -306,6 +331,7 @@ async function advanceSlide() {
     showConnectionMessage('사진 연결을 다시 시도하고 있습니다.');
     scheduleNext(RETRY_INTERVAL_MS);
   } finally {
+    clearTimeout(stuckGuard);
     advancing = false;
   }
 }
