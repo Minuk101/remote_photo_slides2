@@ -430,4 +430,18 @@ setInterval(() => {
   if (photos.length > 0 && !advancing && Date.now() - lastTransitionAt > 60_000) advanceSlide();
 }, 10_000);
 
+// 셀프 리로더: 갤럭시탭 등에서 수동 새로고침 없이 최신 slideshow.js를 받도록,
+// 사진 전환이 끝난 직후(끊김 최소화)에 한 번만 페이지를 갱신합니다.
+const SELF_RELOAD_INTERVAL_MS = 60 * 60 * 1000; // 1시간
+let lastSelfReload = Date.now();
+setInterval(() => {
+  const now = Date.now();
+  if (now - lastSelfReload < SELF_RELOAD_INTERVAL_MS) return;
+  // 진행 중인 전환이 없고, 마지막 전환이 충분히 지나 안정된 시점에만 갱신
+  if (advancing) return;
+  if (now - lastTransitionAt < SLIDE_INTERVAL_MS * 2) return;
+  lastSelfReload = now;
+  location.reload(true);
+}, 30_000);
+
 bootstrap();
