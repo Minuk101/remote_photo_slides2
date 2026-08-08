@@ -10,13 +10,20 @@ const MAX_NEAREST_METERS = 350;
 const CACHE_SCHEMA = 6;
 const NON_VISITOR_TYPES = new Set(['', 'building_materials_store', 'corporate_office', 'educational_institution', 'electrician', 'furniture_store', 'general_contractor', 'hardware_store', 'home_goods_store', 'home_improvement_store', 'manufacturer', 'point_of_interest', 'research_institute', 'school', 'secondary_school', 'service', 'storage', 'telecommunications_service_provider', 'wholesaler']);
 const BANNED_NAMES = /주식회사|\(주\)|가구|초등학교|중학교|고등학교|공업고등학교|물류|창고|공장|본사|사무소/;
-const LANDMARK_TYPES = new Set(['amusement_center', 'amusement_park', 'aquarium', 'art_gallery', 'art_museum', 'botanical_garden', 'concert_hall', 'cultural_landmark', 'historical_landmark', 'historical_place', 'monument', 'museum', 'national_park', 'observation_deck', 'park', 'performing_arts_theater', 'shopping_mall', 'stadium', 'tourist_attraction', 'zoo']);
-const PARENT_TYPES = new Set(['department_store', 'hotel', 'hypermarket', 'lodging', 'movie_theater', 'resort_hotel', 'train_station', 'university']);
+const LANDMARK_TYPES = new Set(['amusement_center', 'amusement_park', 'aquarium', 'art_gallery', 'art_museum', 'beach', 'botanical_garden', 'concert_hall', 'cultural_landmark', 'hiking_area', 'historical_landmark', 'historical_place', 'monument', 'museum', 'national_park', 'observation_deck', 'park', 'performing_arts_theater', 'shopping_mall', 'stadium', 'tourist_attraction', 'zoo']);
+const PARENT_TYPES = new Set(['department_store', 'hypermarket', 'movie_theater', 'train_station', 'university']);
+const STAY_TYPES = new Set(['hotel', 'lodging', 'resort_hotel']);
 const MICRO_TYPES = new Set(['beauty_salon', 'convenience_store', 'hair_care', 'hair_salon', 'locksmith', 'supplier']);
 
 function monthKey() { const d = new Date(); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`; }
 function korean(value = '') { return /[가-힣]/.test(value) && !/[ぁ-んァ-ヶ一-龯]/.test(value); }
 function normalizedName(value = '') { return value.normalize('NFKC').toLowerCase().replace(/[^0-9a-z가-힣]/g, ''); }
+function inferredTransitLandmark(candidate) {
+  const match = String(candidate.name || '').match(/(?:순환버스|관광버스)\s+(.+?)\s*정류장$/);
+  const name = match?.[1]?.trim();
+  if (!name || name.length < 2) return null;
+  return { ...candidate, id: `${candidate.id || candidate.name}:transit-landmark`, name, type: 'tourist_attraction', inferredFromTransit: true };
+}
 function clusterParts(latitude, longitude) { return [Math.floor((latitude + 90) / CLUSTER_SIZE), Math.floor((longitude + 180) / CLUSTER_SIZE)]; }
 function distanceKm(a, b) {
   const r = Math.PI / 180, dLat = (b.latitude - a.latitude) * r, dLon = (b.longitude - a.longitude) * r;
@@ -70,14 +77,17 @@ export class GoogleVisitService {
     const nearest = nearby[0]; if (!nearest) return null;
     const oldName = normalizedName(visit.oldLabel || '');
     const oldCandidate = oldName ? nearby.find(candidate => normalizedName(candidate.name) === oldName) : null;
-    const representativeCandidates = nearby.filter(candidate => LANDMARK_TYPES.has(candidate.type) || PARENT_TYPES.has(candidate.type));
+    const durationMs = Math.max(0, Number(visit.endTime || 0) - Number(visit.startTime || 0));
+    const likelyStay = durationMs >= 2 * 60 * 60_000;
+    const representativeCandidates = nearby.filter(candidate => LANDMARK_TYPES.has(candidate.type) || PARENT_TYPES.has(candidate.type) || (likelyStay && STAY_TYPES.has(candidate.type)));
     const nearestRepresentativeDistance = representativeCandidates[0]?.distanceMeters ?? nearest.distanceMeters;
-    const oldCandidateIsRepresentative = oldCandidate && (LANDMARK_TYPES.has(oldCandidate.type) || PARENT_TYPES.has(oldCandidate.type));
+    const oldCandidateIsRepresentative = oldCandidate && (LANDMARK_TYPES.has(oldCandidate.type) || PARENT_TYPES.has(oldCandidate.type) || (likelyStay && STAY_TYPES.has(oldCandidate.type)));
     for (const candidate of nearby) {
-      const typeBonus = LANDMARK_TYPES.has(candidate.type) ? 300 : PARENT_TYPES.has(candidate.type) ? 210 : MICRO_TYPES.has(candidate.type) ? -140 : 0;
+      const typeBonus = candidate.inferredFromTransit ? 280 : LANDMARK_TYPES.has(candidate.type) ? 320 : PARENT_TYPES.has(candidate.type) ? 210 : STAY_TYPES.has(candidate.type) ? (likelyStay ? 210 : -100) : MICRO_TYPES.has(candidate.type) ? -140 : 0;
       const popularityBonus = Number.isFinite(candidate.popularRank) ? Math.max(0, 120 - candidate.popularRank * 6) : 0;
+      const ratingsBonus = Number.isFinite(candidate.ratings) ? Math.min(150, Math.log10(candidate.ratings + 1) * 50) : 0;
       const oldPlaceBonus = oldCandidate === candidate && oldCandidateIsRepresentative && candidate.distanceMeters <= Math.max(150, nearestRepresentativeDistance * 3) ? 180 : 0;
-      candidate.representativeScore = typeBonus + popularityBonus + oldPlaceBonus - candidate.distanceMeters * 0.7;
+      candidate.representativeScore = typeBonus + popularityBonus + ratingsBonus + oldPlaceBonus - candidate.distanceMeters * 0.7;
     }
     return nearby.sort((a, b) => b.representativeScore - a.representativeScore || a.distanceMeters - b.distanceMeters)[0];
   }
@@ -108,15 +118,21 @@ export class GoogleVisitService {
     const response = await fetch(ENDPOINT, {
       method: 'POST', signal: AbortSignal.timeout(20_000),
       headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': this.apiKey, 'X-Goog-FieldMask': 'places.id,places.displayName,places.location,places.primaryType,places.userRatingCount' },
-      body: JSON.stringify({ languageCode: 'ko', maxResultCount: 20, rankPreference: 'DISTANCE', locationRestriction: { circle: { center: { latitude: visit.latitude, longitude: visit.longitude }, radius: Math.max(300, Math.min(800, visit.radiusMeters + 300)) } } })
+      body: JSON.stringify({ languageCode: 'ko', maxResultCount: 20, rankPreference: 'POPULARITY', locationRestriction: { circle: { center: { latitude: visit.latitude, longitude: visit.longitude }, radius: Math.max(300, Math.min(800, visit.radiusMeters + 300)) } } })
     });
     if (!response.ok) throw new Error(`Google Places ${response.status}`);
     const body = await response.json();
-    const candidates = (body.places || []).map(place => ({
+    const candidates = (body.places || []).map((place, popularRank) => ({
       id: place.id, name: place.displayName?.text || '', type: place.primaryType || '', ratings: place.userRatingCount || 0,
-      latitude: place.location?.latitude, longitude: place.location?.longitude
+      latitude: place.location?.latitude, longitude: place.location?.longitude, popularRank
     }));
-    return this.selectCandidate(candidates.map(place => this.usable(place, visit)).filter(Boolean), visit);
+    const expanded = [];
+    for (const candidate of candidates) {
+      expanded.push(candidate);
+      const inferred = inferredTransitLandmark(candidate);
+      if (inferred) expanded.push(inferred);
+    }
+    return this.selectCandidate(expanded.map(place => this.usable(place, visit)).filter(Boolean), visit);
   }
   async resolve(visits, privatePlaces) {
     for (const visit of visits) {
