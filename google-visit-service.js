@@ -8,6 +8,7 @@ const MONTHLY_LIMIT = process.env.GOOGLE_MONTHLY_LIMIT === undefined ? 4000 : Nu
 const CLUSTER_SIZE = 0.0025;
 const MAX_NEAREST_METERS = 350;
 const SAME_PLACE_CACHE_METERS = 60;
+const NEGATIVE_CACHE_TTL_MS = 30 * 24 * 60 * 60_000;
 const CACHE_SCHEMA = 6;
 const NON_VISITOR_TYPES = new Set(['', 'building_materials_store', 'corporate_office', 'educational_institution', 'electrician', 'furniture_store', 'general_contractor', 'hardware_store', 'home_goods_store', 'home_improvement_store', 'manufacturer', 'point_of_interest', 'research_institute', 'school', 'secondary_school', 'service', 'storage', 'telecommunications_service_provider', 'wholesaler']);
 const BANNED_NAMES = /주식회사|\(주\)|가구|초등학교|중학교|고등학교|공업고등학교|물류|창고|공장|본사|사무소/;
@@ -66,7 +67,8 @@ export class GoogleVisitService {
     return {
       ...value,
       visitLatitude: visit.latitude,
-      visitLongitude: visit.longitude
+      visitLongitude: visit.longitude,
+      cachedAt: value.cachedAt ?? Date.now()
     };
   }
   nearbyCachedLabel(visit) {
@@ -197,6 +199,9 @@ export class GoogleVisitService {
         const value = this.cacheValue(visit, { newLabel: oldCandidate.name, labelSource: 'google-visit-cache', labelDistanceMeters: oldCandidate.distanceMeters });
         Object.assign(visit, value); this.cache[visit.id] = value; continue;
       }
+      if (cached?.labelSource === 'legacy-fallback' && Number(cached.cachedAt || 0) + NEGATIVE_CACHE_TTL_MS > Date.now()) {
+        Object.assign(visit, cached); continue;
+      }
       if (!this.apiKey || Number(this.usage[monthKey()] || 0) >= MONTHLY_LIMIT) {
         visit.newLabel = visit.oldLabel; visit.labelSource = 'legacy-fallback'; continue;
       }
@@ -205,7 +210,10 @@ export class GoogleVisitService {
         const place = await this.search(visit);
         const value = this.cacheValue(visit, place ? { newLabel: place.name, labelSource: 'google-visit', labelDistanceMeters: place.distanceMeters } : { newLabel: visit.oldLabel, labelSource: 'legacy-fallback' });
         Object.assign(visit, value); this.cache[visit.id] = value;
-      } catch (error) { visit.newLabel = visit.oldLabel; visit.labelSource = 'legacy-fallback'; visit.labelError = error.message; }
+      } catch (error) {
+        const value = this.cacheValue(visit, { newLabel: visit.oldLabel, labelSource: 'legacy-fallback', labelError: error.message });
+        Object.assign(visit, value); this.cache[visit.id] = value;
+      }
       await this.save();
     }
     await this.save();
