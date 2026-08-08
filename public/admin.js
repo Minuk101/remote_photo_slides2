@@ -18,6 +18,7 @@ const elements = {
   selectCurrent: document.getElementById('select-current'),
   selectedList: document.getElementById('selected-list'),
   selectedCount: document.getElementById('selected-count'),
+  clearSelection: document.getElementById('clear-selection'),
   saveButton: document.getElementById('save-selection'),
   saveMessage: document.getElementById('save-message'),
   photoCount: document.getElementById('photo-count')
@@ -112,6 +113,7 @@ function renderSelected() {
   elements.selectedList.replaceChildren();
   const selected = [...state.selected].sort((a, b) => a.localeCompare(b, 'ko-KR', { numeric: true }));
   elements.selectedCount.textContent = `${selected.length}개`;
+  elements.clearSelection.disabled = selected.length === 0;
 
   if (selected.length === 0) {
     const empty = document.createElement('p');
@@ -179,6 +181,32 @@ async function loadFolder(folder) {
 }
 
 elements.selectCurrent.addEventListener('click', () => toggleSelection(state.currentPath));
+
+elements.clearSelection.addEventListener('click', async () => {
+  if (state.selected.size === 0 || !confirm('선택한 폴더를 모두 없앨까요? 슬라이드쇼의 재생 목록도 비워집니다.')) return;
+  elements.clearSelection.disabled = true;
+  elements.saveButton.disabled = true;
+  elements.saveMessage.classList.remove('error');
+  elements.saveMessage.textContent = '선택한 폴더를 모두 없애고 있습니다.';
+  try {
+    const result = await api('/api/selection', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folders: [] })
+    });
+    state.selected = new Set(result.selectedFolders);
+    renderSelected();
+    await loadFolder(state.currentPath);
+    elements.saveMessage.textContent = '선택 목록과 슬라이드쇼 재생 목록을 모두 비웠습니다.';
+    elements.photoCount.textContent = `재생 대상 ${result.photoCount.toLocaleString()}장`;
+  } catch (error) {
+    elements.saveMessage.classList.add('error');
+    elements.saveMessage.textContent = error.message;
+  } finally {
+    elements.clearSelection.disabled = state.selected.size === 0;
+    elements.saveButton.disabled = false;
+  }
+});
 
 elements.saveGoogleKey.addEventListener('click', async () => {
   const apiKey = elements.googleApiKey.value.trim();
