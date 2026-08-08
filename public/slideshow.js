@@ -35,6 +35,7 @@ const locationCard = document.getElementById('location-card');
 const locationPrimary = document.getElementById('location-primary');
 const locationSecondary = document.getElementById('location-secondary');
 let locationTimer = null;
+let locationUpdateTimer = null;
 
 function openDatabase() {
   if (databasePromise) return databasePromise;
@@ -290,7 +291,9 @@ function showPhoto(blob, photo) {
 
   activeLayer = nextLayerIndex;
   activeObjectUrl = newUrl;
-  showLocation(photo.location);
+  clearTimeout(locationUpdateTimer);
+  locationCard.classList.remove('visible');
+  locationUpdateTimer = setTimeout(() => showLocation(photo.location), 1000);
   setTimeout(() => {
     current.image.removeAttribute('src');
     current.background.removeAttribute('src');

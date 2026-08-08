@@ -21,7 +21,8 @@ const PRIVATE_PLACES = process.env.PRIVATE_PLACES_FILE || 'D:\\민욱\\remote_sl
 const MAX_PHOTO_GAP_MS = 90 * 60_000;
 const MAX_VISIT_DISTANCE_KM = 1.5;
 const BUILTIN_AREAS = [
-  { name: '제주국제공항', minLatitude: 33.49, maxLatitude: 33.525, minLongitude: 126.455, maxLongitude: 126.515 }
+  { name: '제주국제공항', minLatitude: 33.49, maxLatitude: 33.525, minLongitude: 126.455, maxLongitude: 126.515 },
+  { name: '훈데르트힐즈', minLatitude: 33.489, maxLatitude: 33.497, minLongitude: 126.951, maxLongitude: 126.961 }
 ];
 
 function distanceKm(a, b) {
