@@ -8,7 +8,10 @@ import { GoogleVisitService } from './google-visit-service.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(HERE, 'data');
 const RESULT_FILE = path.join(DATA_DIR, 'visit-analysis.json');
-const PHOTO_ROOTS = (process.env.PHOTO_ROOTS || 'D:\\민욱\\사진\\2025|D:\\민욱\\사진\\2026').split('|').filter(Boolean).map(value => path.resolve(value));
+const EXIF_CACHE_FILE = path.join(DATA_DIR, 'exif-metadata-cache.json');
+const ADMIN_CACHE_FILE = path.join(DATA_DIR, 'admin-geocode-cache.json');
+const EXIF_CACHE_SCHEMA = 1;
+const PHOTO_ROOTS = (process.env.PHOTO_ROOTS || 'D:\\민욱\\사진\\2024|D:\\민욱\\사진\\2025|D:\\민욱\\사진\\2026').split('|').filter(Boolean).map(value => path.resolve(value));
 const GOOGLE_GPX = process.env.GPX_PATH || 'D:\\민욱\\타임라인\\google_maps\\260723\\timeline_export_1784779939485.gpx';
 const GPSLOGGER_DIR = process.env.GPSLOGGER_DIR || 'D:\\민욱\\타임라인\\GPSLogger';
 const OLD_CACHE = process.env.OLD_LOCATION_CACHE || 'D:\\민욱\\remote_slides\\data\\locations\\photo-locations.json';
@@ -17,6 +20,9 @@ const PRIVATE_PLACES = process.env.PRIVATE_PLACES_FILE || 'D:\\민욱\\remote_sl
 
 const MAX_PHOTO_GAP_MS = 90 * 60_000;
 const MAX_VISIT_DISTANCE_KM = 1.5;
+const BUILTIN_AREAS = [
+  { name: '제주국제공항', minLatitude: 33.49, maxLatitude: 33.525, minLongitude: 126.455, maxLongitude: 126.515 }
+];
 
 function distanceKm(a, b) {
   if (!a || !b) return Infinity;
@@ -76,6 +82,19 @@ function analyzedFileId(file) {
   return crypto.createHash('sha1').update(normalizeFile(file)).digest('hex').slice(0, 20);
 }
 
+function applyBuiltinAreas(visits) {
+  for (const visit of visits) {
+    const area = BUILTIN_AREAS.find(candidate => (
+      visit.latitude >= candidate.minLatitude && visit.latitude <= candidate.maxLatitude
+      && visit.longitude >= candidate.minLongitude && visit.longitude <= candidate.maxLongitude
+    ));
+    if (!area) continue;
+    visit.newLabel = area.name;
+    visit.labelSource = 'builtin-area';
+    visit.labelDistanceMeters = null;
+  }
+}
+
 async function reverseGeocodeNominatim(latitude, longitude) {
   const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&accept-language=ko&zoom=10`;
   const response = await fetch(url, { headers: { 'User-Agent': 'RemotePhotoSlides/2.0' } });
@@ -88,10 +107,26 @@ async function reverseGeocodeNominatim(latitude, longitude) {
   };
 }
 
-async function enrichVisitsWithCity(visits) {
+function adminCacheKey(latitude, longitude) {
+  return `${Math.round(Number(latitude) / 0.02)}:${Math.round(Number(longitude) / 0.02)}`;
+}
+
+async function enrichVisitsWithCity(visits, knownVisits = []) {
+  const adminCache = await readJson(ADMIN_CACHE_FILE, {});
+  for (const visit of knownVisits) {
+    if (visit.adminCity === undefined || visit.adminCountry === undefined) continue;
+    adminCache[adminCacheKey(visit.latitude, visit.longitude)] = { city: visit.adminCity, country: visit.adminCountry };
+  }
   for (const visit of visits) {
     if (visit.labelSource === 'moving') continue;
     if (visit.adminCity !== undefined && visit.adminCountry !== undefined) continue;
+    const key = adminCacheKey(visit.latitude, visit.longitude);
+    const cached = adminCache[key];
+    if (cached) {
+      visit.adminCity = cached.city;
+      visit.adminCountry = cached.country;
+      continue;
+    }
     try {
       const geo = await reverseGeocodeNominatim(visit.latitude, visit.longitude);
       visit.adminCity = geo.city;
@@ -100,8 +135,11 @@ async function enrichVisitsWithCity(visits) {
       visit.adminCity = null;
       visit.adminCountry = null;
     }
+    adminCache[key] = { city: visit.adminCity, country: visit.adminCountry };
+    await atomicJson(ADMIN_CACHE_FILE, adminCache);
     await new Promise(r => setTimeout(r, 1100));
   }
+  await atomicJson(ADMIN_CACHE_FILE, adminCache);
 }
 
 async function readJson(file, fallback) {
@@ -213,6 +251,7 @@ async function listJpegs(roots) {
 }
 
 function runExifTool(files) {
+  if (!files.length) return Promise.resolve([]);
   return new Promise((resolve, reject) => {
     const args = ['-json', '-n', '-fast2', '-charset', 'filename=utf8', '-SourceFile', '-DateTimeOriginal', '-CreateDate', '-OffsetTimeOriginal', '-GPSLatitude', '-GPSLongitude', '-@', '-'];
     const child = spawn('exiftool', args, { windowsHide: true });
@@ -227,6 +266,25 @@ function runExifTool(files) {
     });
     child.stdin.end(`${files.join('\n')}\n`, 'utf8');
   });
+}
+
+async function loadExifRows(files, changedFiles = []) {
+  const saved = await readJson(EXIF_CACHE_FILE, {});
+  const rowsByFile = saved.schema === EXIF_CACHE_SCHEMA && saved.rowsByFile && typeof saved.rowsByFile === 'object'
+    ? saved.rowsByFile
+    : {};
+  const current = new Map(files.map(file => [normalizeFile(file), file]));
+  const changed = new Set(changedFiles.map(normalizeFile));
+  const targets = files.filter(file => !rowsByFile[normalizeFile(file)] || changed.has(normalizeFile(file)));
+  const freshRows = await runExifTool(targets);
+  for (const row of freshRows) rowsByFile[normalizeFile(row.SourceFile)] = row;
+  for (const key of Object.keys(rowsByFile)) if (!current.has(key)) delete rowsByFile[key];
+  await atomicJson(EXIF_CACHE_FILE, { schema: EXIF_CACHE_SCHEMA, rowsByFile });
+  return {
+    rows: files.map(file => rowsByFile[normalizeFile(file)]).filter(Boolean),
+    scanned: targets.length,
+    cached: Math.max(0, files.length - targets.length)
+  };
 }
 
 async function loadAssignments() {
@@ -268,6 +326,7 @@ function positionForPhoto(row, tracks, assignments) {
   const assignment = assignments.get(normalizeFile(row.SourceFile));
   const assigned = assignment ? { latitude: Number(assignment.latitude), longitude: Number(assignment.longitude) } : null;
   const timeline = time ? chooseTimelinePosition(tracks, time) : null;
+  if (embedded && !assigned) return { ...embedded, source: 'embedded', method: 'embedded', timeDeltaSeconds: 0 };
   if (embedded && assigned && distanceKm(embedded, assigned) > 0.1) return { ...embedded, source: 'embedded-corrected', method: 'manual-or-native', timeDeltaSeconds: 0 };
   if (timeline) return timeline;
   if (embedded) return { ...embedded, source: assigned ? 'embedded-from-old-timeline' : 'embedded', method: 'embedded', timeDeltaSeconds: 0 };
@@ -292,6 +351,8 @@ function makeVisits(photos) {
     const labels = group.photos.map(photo => photo.oldLabel).filter(Boolean);
     const counts = new Map(labels.map(label => [label, (labels.filter(value => value === label).length)]));
     const oldLabel = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+    const cityCounts = new Map(group.photos.map(photo => photo.oldCity).filter(Boolean).map(city => [city, group.photos.filter(photo => photo.oldCity === city).length]));
+    const countryCounts = new Map(group.photos.map(photo => photo.oldCountry).filter(Boolean).map(country => [country, group.photos.filter(photo => photo.oldCountry === country).length]));
     const sources = Object.fromEntries([...new Set(group.photos.map(p => p.position.source))].map(source => [source, group.photos.filter(p => p.position.source === source).length]));
     return {
       id: crypto.createHash('sha1').update(`${group.photos[0].time}:${group.center.latitude}:${group.center.longitude}`).digest('hex').slice(0, 16),
@@ -304,6 +365,8 @@ function makeVisits(photos) {
       centerPointCount: group.center.inlierCount || group.photos.length,
       photoCount: group.photos.length,
       oldLabel,
+      adminCity: [...cityCounts].sort((a, b) => b[1] - a[1])[0]?.[0],
+      adminCountry: [...countryCounts].sort((a, b) => b[1] - a[1])[0]?.[0],
       sources,
       photos: group.photos.map(photo => ({ file: photo.file, name: path.basename(photo.file), time: photo.time, oldLabel: photo.oldLabel, source: photo.position.source, deltaSeconds: photo.position.timeDeltaSeconds }))
     };
@@ -380,25 +443,34 @@ export class VisitAnalysisService {
     return this.locations.get(normalizeFile(file)) || null;
   }
 
-  async refresh({ force = false } = {}) {
+  async refresh({ force = false, changedFiles = [] } = {}) {
     if (this.busy) return;
     if (!force && this.result) return;
     this.busy = true;
     this.error = null;
     try {
       const photoFiles = await listJpegs(PHOTO_ROOTS);
-      const [tracks, rows, assignments, oldCache, privatePlaces] = await Promise.all([
-        loadTracks(), runExifTool(photoFiles), loadAssignments(), readJson(OLD_CACHE, {}), readJson(PRIVATE_PLACES, { places: [] })
+      const [tracks, exif, assignments, oldCache, privatePlaces] = await Promise.all([
+        loadTracks(), loadExifRows(photoFiles, changedFiles), loadAssignments(), readJson(OLD_CACHE, {}), readJson(PRIVATE_PLACES, { places: [] })
       ]);
+      const rows = exif.rows;
       const photos = rows.map(row => {
         const file = path.resolve(row.SourceFile);
         const time = photoTime(row);
         const old = oldCache[oldKeyFor(file)];
-        return { file, time, oldLabel: labelOf(old), position: time ? positionForPhoto(row, tracks, assignments) : null };
+        return { file, time, oldLabel: labelOf(old), oldCity: old?.city || null, oldCountry: old?.country || null, position: time ? positionForPhoto(row, tracks, assignments) : null };
       }).filter(photo => photo.time);
       const visits = makeVisits(photos);
+      const previousVisits = new Map(this.visits.map(visit => [visit.id, visit]));
+      for (const visit of visits) {
+        const previous = previousVisits.get(visit.id);
+        if (!previous) continue;
+        if (previous.adminCity !== undefined) visit.adminCity = previous.adminCity;
+        if (previous.adminCountry !== undefined) visit.adminCountry = previous.adminCountry;
+      }
       await this.google.resolve(visits, privatePlaces.places || []);
-      await enrichVisitsWithCity(visits);
+      applyBuiltinAreas(visits);
+      await enrichVisitsWithCity(visits, this.visits);
       this.result = {
         schema: 1,
         generatedAt: Date.now(),
@@ -409,7 +481,9 @@ export class VisitAnalysisService {
           visits: visits.length,
           googleTrackPoints: tracks.google.length,
           gpsLoggerTrackPoints: tracks.gpsLogger.length,
-          gpsLoggerFiles: tracks.loggerFiles
+          gpsLoggerFiles: tracks.loggerFiles,
+          exifScanned: exif.scanned,
+          exifCached: exif.cached
         },
         analyzedFileIds: rows.map(row => analyzedFileId(path.resolve(row.SourceFile))),
         visits
@@ -430,6 +504,7 @@ export class VisitAnalysisService {
       const privatePlaces = await readJson(PRIVATE_PLACES, { places: [] });
       for (const visit of this.visits) { delete visit.newLabel; delete visit.labelSource; delete visit.labelDistanceMeters; delete visit.labelError; }
       await this.google.resolve(this.visits, privatePlaces.places || []);
+      applyBuiltinAreas(this.visits);
       await enrichVisitsWithCity(this.visits);
       this.result.generatedAt = Date.now();
       this.rebuildLocationIndex();

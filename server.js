@@ -76,7 +76,10 @@ function configureWatchers() {
     try {
       const watcher = watch(absolute(folder), { recursive: true }, (event, filename) => {
       dirty = true;
-      if (!filename || /\.jpe?g$/i.test(String(filename))) scheduleAnalysis('새 사진 또는 사진 변경');
+      if (!filename || /\.jpe?g$/i.test(String(filename))) {
+        if (filename) pendingPhotoFiles.add(path.resolve(absolute(folder), String(filename)));
+        scheduleAnalysis('새 사진 또는 사진 변경');
+      }
       });
       watcher.on('error', error => console.warn(`사진 폴더 감시 오류 (${folder}):`, error.message));
       watchers.push(watcher);
@@ -115,10 +118,11 @@ async function runScheduledAnalysis(generation) {
   analysisTimer = null;
   if (service.busy) { scheduleAnalysis(autoAnalysis.reason || '분석 중 추가 변경'); return; }
   autoAnalysis.phase = 'running'; autoAnalysis.startedAt = Date.now(); autoAnalysis.scheduledFor = null; autoAnalysis.error = null;
+  const changedFiles = [...pendingPhotoFiles];
   try {
-    await service.refresh({ force: true });
+    await service.refresh({ force: true, changedFiles });
     dirty = true;
-    for (const file of [...pendingPhotoFiles]) if (service.hasAnalyzedFile(file)) pendingPhotoFiles.delete(file);
+    for (const file of changedFiles) pendingPhotoFiles.delete(file);
     autoAnalysis.completedAt = Date.now();
     autoAnalysis.phase = analysisGeneration === generation ? 'idle' : 'waiting';
   } catch (error) {

@@ -3,5 +3,6 @@ data/
 .cache/
 .photo-cache/
 .thumb-cache/
+.test-gps/
 logs/
 npm-debug.log*
