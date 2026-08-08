@@ -16,6 +16,7 @@ const LANDMARK_TYPES = new Set(['amusement_center', 'amusement_park', 'aquarium'
 const PARENT_TYPES = new Set(['department_store', 'hypermarket', 'movie_theater', 'train_station', 'university']);
 const STAY_TYPES = new Set(['hotel', 'lodging', 'resort_hotel']);
 const MICRO_TYPES = new Set(['beauty_salon', 'convenience_store', 'hair_care', 'hair_salon', 'locksmith', 'supplier']);
+const DINING_TYPES = new Set(['bakery', 'bar', 'cafe', 'coffee_shop', 'dessert_shop', 'ice_cream_shop', 'korean_restaurant', 'pub', 'restaurant', 'seafood_restaurant']);
 const BEACH_NAME = /해수욕장|해변/;
 
 function monthKey() { const d = new Date(); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`; }
@@ -129,6 +130,8 @@ export class GoogleVisitService {
     const oldName = normalizedName(visit.oldLabel || '');
     const oldCandidate = oldName ? nearby.find(candidate => normalizedName(candidate.name) === oldName) : null;
     const durationMs = Math.max(0, Number(visit.endTime || 0) - Number(visit.startTime || 0));
+    const preciseDining = nearby.find(candidate => (DINING_TYPES.has(candidate.type) || candidate.type.endsWith('_restaurant')) && candidate.distanceMeters <= 25);
+    if (preciseDining && Number(visit.radiusMeters || 0) <= 100 && durationMs >= 10 * 60_000) return preciseDining;
     const likelyStay = durationMs >= 2 * 60 * 60_000;
     const representativeCandidates = nearby.filter(candidate => LANDMARK_TYPES.has(candidate.type) || PARENT_TYPES.has(candidate.type) || (likelyStay && STAY_TYPES.has(candidate.type)));
     const nearestRepresentativeDistance = representativeCandidates[0]?.distanceMeters ?? nearest.distanceMeters;
