@@ -20,6 +20,8 @@ const PRIVATE_PLACES = process.env.PRIVATE_PLACES_FILE || 'D:\\민욱\\remote_sl
 
 const MAX_PHOTO_GAP_MS = 90 * 60_000;
 const MAX_VISIT_DISTANCE_KM = 1.5;
+const NEW_STOP_GAP_MS = 3 * 60_000;
+const NEW_STOP_DISTANCE_KM = 0.3;
 
 function distanceKm(a, b) {
   if (!a || !b) return Infinity;
@@ -77,6 +79,13 @@ function normalizeFile(value) {
 
 function analyzedFileId(file) {
   return crypto.createHash('sha1').update(normalizeFile(file)).digest('hex').slice(0, 20);
+}
+
+function insideBounds(point, bounds) {
+  return Number(point?.latitude) >= bounds.minLatitude
+    && Number(point?.latitude) <= bounds.maxLatitude
+    && Number(point?.longitude) >= bounds.minLongitude
+    && Number(point?.longitude) <= bounds.maxLongitude;
 }
 
 async function reverseGeocodeNominatim(latitude, longitude) {
@@ -323,7 +332,10 @@ function makeVisits(photos) {
   for (const photo of located) {
     const current = groups.at(-1);
     const previous = current?.photos.at(-1);
-    const split = !current || photo.time - previous.time > MAX_PHOTO_GAP_MS || distanceKm(photo.position, current.center) > MAX_VISIT_DISTANCE_KM;
+    const gapMs = previous ? photo.time - previous.time : Infinity;
+    const distanceFromPreviousKm = previous ? distanceKm(photo.position, previous.position) : Infinity;
+    const movedToNewStop = gapMs >= NEW_STOP_GAP_MS && distanceFromPreviousKm >= NEW_STOP_DISTANCE_KM;
+    const split = !current || gapMs > MAX_PHOTO_GAP_MS || distanceKm(photo.position, current.center) > MAX_VISIT_DISTANCE_KM || movedToNewStop;
     if (split) groups.push({ photos: [photo], center: { latitude: photo.position.latitude, longitude: photo.position.longitude, inlierCount: 1 } });
     else {
       current.photos.push(photo);
@@ -392,6 +404,17 @@ export class VisitAnalysisService {
   }
 
   async setGooglePlacesApiKey(apiKey) { return this.google.setApiKey(apiKey); }
+
+  async forgetLocationsInBounds(bounds) {
+    for (const visit of this.visits) {
+      if (!insideBounds(visit, bounds)) continue;
+      delete visit.newLabel;
+      delete visit.labelSource;
+      delete visit.labelDistanceMeters;
+      delete visit.labelError;
+    }
+    await this.google.forgetRegion(bounds);
+  }
 
   get visits() { return this.result?.visits || []; }
 

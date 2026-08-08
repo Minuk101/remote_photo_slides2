@@ -16,6 +16,7 @@ const LANDMARK_TYPES = new Set(['amusement_center', 'amusement_park', 'aquarium'
 const PARENT_TYPES = new Set(['department_store', 'hypermarket', 'movie_theater', 'train_station', 'university']);
 const STAY_TYPES = new Set(['hotel', 'lodging', 'resort_hotel']);
 const MICRO_TYPES = new Set(['beauty_salon', 'convenience_store', 'hair_care', 'hair_salon', 'locksmith', 'supplier']);
+const BEACH_NAME = /해수욕장|해변/;
 
 function monthKey() { const d = new Date(); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`; }
 function korean(value = '') { return /[가-힣]/.test(value) && !/[ぁ-んァ-ヶ一-龯]/.test(value); }
@@ -39,6 +40,7 @@ export class GoogleVisitService {
     this.cacheFile = path.join(dataDir, 'google-visit-cache.json');
     this.cache = {};
     this.oldClusters = {};
+    this.skipOldCacheRegions = [];
     this.usage = {};
     this.apiKey = process.env.GOOGLE_PLACES_API_KEY || '';
   }
@@ -63,6 +65,16 @@ export class GoogleVisitService {
     return this.status();
   }
   async save() { const temp = `${this.cacheFile}.tmp`; await writeFile(temp, `${JSON.stringify({ schema: CACHE_SCHEMA, cache: this.cache, usage: this.usage })}\n`); await rename(temp, this.cacheFile); }
+  async forgetRegion(bounds) {
+    for (const [id, value] of Object.entries(this.cache)) {
+      const latitude = Number(value?.visitLatitude);
+      const longitude = Number(value?.visitLongitude);
+      if (latitude >= bounds.minLatitude && latitude <= bounds.maxLatitude
+        && longitude >= bounds.minLongitude && longitude <= bounds.maxLongitude) delete this.cache[id];
+    }
+    this.skipOldCacheRegions.push(bounds);
+    await this.save();
+  }
   cacheValue(visit, value) {
     return {
       ...value,
@@ -123,14 +135,19 @@ export class GoogleVisitService {
     const oldCandidateIsRepresentative = oldCandidate && (LANDMARK_TYPES.has(oldCandidate.type) || PARENT_TYPES.has(oldCandidate.type) || (likelyStay && STAY_TYPES.has(oldCandidate.type)));
     for (const candidate of nearby) {
       const typeBonus = candidate.inferredFromTransit ? 280 : LANDMARK_TYPES.has(candidate.type) ? 320 : PARENT_TYPES.has(candidate.type) ? 210 : STAY_TYPES.has(candidate.type) ? (likelyStay ? 210 : -100) : MICRO_TYPES.has(candidate.type) ? -140 : 0;
+      const areaBonus = BEACH_NAME.test(candidate.name) ? 140 : 0;
       const popularityBonus = Number.isFinite(candidate.popularRank) ? Math.max(0, 120 - candidate.popularRank * 6) : 0;
       const ratingsBonus = Number.isFinite(candidate.ratings) ? Math.min(150, Math.log10(candidate.ratings + 1) * 50) : 0;
       const oldPlaceBonus = oldCandidate === candidate && oldCandidateIsRepresentative && candidate.distanceMeters <= Math.max(150, nearestRepresentativeDistance * 3) ? 180 : 0;
-      candidate.representativeScore = typeBonus + popularityBonus + ratingsBonus + oldPlaceBonus - candidate.distanceMeters * 0.7;
+      candidate.representativeScore = typeBonus + areaBonus + popularityBonus + ratingsBonus + oldPlaceBonus - candidate.distanceMeters * 0.7;
     }
     return nearby.sort((a, b) => b.representativeScore - a.representativeScore || a.distanceMeters - b.distanceMeters)[0];
   }
   cachedCandidate(visit) {
+    if (this.skipOldCacheRegions.some(bounds => (
+      visit.latitude >= bounds.minLatitude && visit.latitude <= bounds.maxLatitude
+      && visit.longitude >= bounds.minLongitude && visit.longitude <= bounds.maxLongitude
+    ))) return null;
     const [latPart, lonPart] = clusterParts(visit.latitude, visit.longitude);
     const candidates = [];
     for (let latOffset = -1; latOffset <= 1; latOffset++) for (let lonOffset = -1; lonOffset <= 1; lonOffset++) {
