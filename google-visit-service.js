@@ -7,6 +7,7 @@ const OLD_CANDIDATE_CACHE = process.env.OLD_GOOGLE_CACHE || 'D:\\민욱\\remote_
 const MONTHLY_LIMIT = process.env.GOOGLE_MONTHLY_LIMIT === undefined ? 4000 : Number(process.env.GOOGLE_MONTHLY_LIMIT);
 const CLUSTER_SIZE = 0.0025;
 const MAX_NEAREST_METERS = 350;
+const SAME_PLACE_CACHE_METERS = 60;
 const CACHE_SCHEMA = 6;
 const NON_VISITOR_TYPES = new Set(['', 'building_materials_store', 'corporate_office', 'educational_institution', 'electrician', 'furniture_store', 'general_contractor', 'hardware_store', 'home_goods_store', 'home_improvement_store', 'manufacturer', 'point_of_interest', 'research_institute', 'school', 'secondary_school', 'service', 'storage', 'telecommunications_service_provider', 'wholesaler']);
 const BANNED_NAMES = /주식회사|\(주\)|가구|초등학교|중학교|고등학교|공업고등학교|물류|창고|공장|본사|사무소/;
@@ -61,6 +62,31 @@ export class GoogleVisitService {
     return this.status();
   }
   async save() { const temp = `${this.cacheFile}.tmp`; await writeFile(temp, `${JSON.stringify({ schema: CACHE_SCHEMA, cache: this.cache, usage: this.usage })}\n`); await rename(temp, this.cacheFile); }
+  cacheValue(visit, value) {
+    return {
+      ...value,
+      visitLatitude: visit.latitude,
+      visitLongitude: visit.longitude
+    };
+  }
+  nearbyCachedLabel(visit) {
+    let best = null;
+    for (const value of Object.values(this.cache)) {
+      if (!value?.newLabel || value.labelSource === 'legacy-fallback') continue;
+      const latitude = Number(value.visitLatitude);
+      const longitude = Number(value.visitLongitude);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) continue;
+      const distanceMeters = distanceKm(visit, { latitude, longitude }) * 1000;
+      if (distanceMeters > SAME_PLACE_CACHE_METERS || (best && distanceMeters >= best.distanceMeters)) continue;
+      best = { value, distanceMeters };
+    }
+    if (!best) return null;
+    return {
+      newLabel: best.value.newLabel,
+      labelSource: 'google-visit-spatial-cache',
+      labelDistanceMeters: best.value.labelDistanceMeters ?? null
+    };
+  }
   privateName(visit, places) {
     return places.map(place => ({ place, km: distanceKm(visit, place) })).filter(x => x.km * 1000 <= Number(x.place.radiusMeters || 0)).sort((a, b) => a.km - b.km)[0]?.place?.name || null;
   }
@@ -135,6 +161,12 @@ export class GoogleVisitService {
     return this.selectCandidate(expanded.map(place => this.usable(place, visit)).filter(Boolean), visit);
   }
   async resolve(visits, privatePlaces) {
+    // Visit IDs can change when GPS sources or clustering improve. Attach coordinates
+    // to every still-matching cache entry first so nearby visits can reuse the label.
+    for (const visit of visits) {
+      const cached = this.cache[visit.id];
+      if (cached) this.cache[visit.id] = this.cacheValue(visit, cached);
+    }
     for (const visit of visits) {
       const privateName = this.privateName(visit, privatePlaces);
       if (privateName) { visit.newLabel = privateName; visit.labelSource = 'private'; continue; }
@@ -143,10 +175,15 @@ export class GoogleVisitService {
         visit.newLabel = null; visit.labelSource = 'moving'; visit.labelDistanceMeters = null; continue;
       }
       const cached = this.cache[visit.id];
-      if (cached) { Object.assign(visit, cached); continue; }
+      if (cached?.newLabel && cached.labelSource !== 'legacy-fallback') { Object.assign(visit, cached); continue; }
+      const nearbyCached = this.nearbyCachedLabel(visit);
+      if (nearbyCached) {
+        const value = this.cacheValue(visit, nearbyCached);
+        Object.assign(visit, value); this.cache[visit.id] = value; continue;
+      }
       const oldCandidate = this.cachedCandidate(visit);
       if (oldCandidate) {
-        const value = { newLabel: oldCandidate.name, labelSource: 'google-visit-cache', labelDistanceMeters: oldCandidate.distanceMeters };
+        const value = this.cacheValue(visit, { newLabel: oldCandidate.name, labelSource: 'google-visit-cache', labelDistanceMeters: oldCandidate.distanceMeters });
         Object.assign(visit, value); this.cache[visit.id] = value; continue;
       }
       if (!this.apiKey || Number(this.usage[monthKey()] || 0) >= MONTHLY_LIMIT) {
@@ -155,7 +192,7 @@ export class GoogleVisitService {
       this.usage[monthKey()] = Number(this.usage[monthKey()] || 0) + 1;
       try {
         const place = await this.search(visit);
-        const value = place ? { newLabel: place.name, labelSource: 'google-visit', labelDistanceMeters: place.distanceMeters } : { newLabel: visit.oldLabel, labelSource: 'legacy-fallback' };
+        const value = this.cacheValue(visit, place ? { newLabel: place.name, labelSource: 'google-visit', labelDistanceMeters: place.distanceMeters } : { newLabel: visit.oldLabel, labelSource: 'legacy-fallback' });
         Object.assign(visit, value); this.cache[visit.id] = value;
       } catch (error) { visit.newLabel = visit.oldLabel; visit.labelSource = 'legacy-fallback'; visit.labelError = error.message; }
       await this.save();

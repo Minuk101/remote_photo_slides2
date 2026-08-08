@@ -22,7 +22,9 @@ const MAX_PHOTO_GAP_MS = 90 * 60_000;
 const MAX_VISIT_DISTANCE_KM = 1.5;
 const BUILTIN_AREAS = [
   { name: '제주국제공항', minLatitude: 33.49, maxLatitude: 33.525, minLongitude: 126.455, maxLongitude: 126.515 },
-  { name: '훈데르트힐즈', minLatitude: 33.489, maxLatitude: 33.497, minLongitude: 126.951, maxLongitude: 126.961 }
+  { name: '훈데르트힐즈', minLatitude: 33.489, maxLatitude: 33.497, minLongitude: 126.951, maxLongitude: 126.961 },
+  { name: '서빈백사', minLatitude: 33.5015, maxLatitude: 33.5031, minLongitude: 126.9424, maxLongitude: 126.9440 },
+  { name: '소담재', minLatitude: 33.5155, maxLatitude: 33.5167, minLongitude: 126.8747, maxLongitude: 126.8759 }
 ];
 
 function distanceKm(a, b) {
