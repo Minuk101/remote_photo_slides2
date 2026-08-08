@@ -20,12 +20,6 @@ const PRIVATE_PLACES = process.env.PRIVATE_PLACES_FILE || 'D:\\민욱\\remote_sl
 
 const MAX_PHOTO_GAP_MS = 90 * 60_000;
 const MAX_VISIT_DISTANCE_KM = 1.5;
-const BUILTIN_AREAS = [
-  { name: '제주국제공항', minLatitude: 33.49, maxLatitude: 33.525, minLongitude: 126.455, maxLongitude: 126.515 },
-  { name: '훈데르트힐즈', minLatitude: 33.489, maxLatitude: 33.497, minLongitude: 126.951, maxLongitude: 126.961 },
-  { name: '서빈백사', minLatitude: 33.5015, maxLatitude: 33.5031, minLongitude: 126.9424, maxLongitude: 126.9440 },
-  { name: '소담재', minLatitude: 33.5155, maxLatitude: 33.5167, minLongitude: 126.8747, maxLongitude: 126.8759 }
-];
 
 function distanceKm(a, b) {
   if (!a || !b) return Infinity;
@@ -83,19 +77,6 @@ function normalizeFile(value) {
 
 function analyzedFileId(file) {
   return crypto.createHash('sha1').update(normalizeFile(file)).digest('hex').slice(0, 20);
-}
-
-function applyBuiltinAreas(visits) {
-  for (const visit of visits) {
-    const area = BUILTIN_AREAS.find(candidate => (
-      visit.latitude >= candidate.minLatitude && visit.latitude <= candidate.maxLatitude
-      && visit.longitude >= candidate.minLongitude && visit.longitude <= candidate.maxLongitude
-    ));
-    if (!area) continue;
-    visit.newLabel = area.name;
-    visit.labelSource = 'builtin-area';
-    visit.labelDistanceMeters = null;
-  }
 }
 
 async function reverseGeocodeNominatim(latitude, longitude) {
@@ -463,6 +444,7 @@ export class VisitAnalysisService {
         const old = oldCache[oldKeyFor(file)];
         return { file, time, oldLabel: labelOf(old), oldCity: old?.city || null, oldCountry: old?.country || null, position: time ? positionForPhoto(row, tracks, assignments) : null };
       }).filter(photo => photo.time);
+      this.google.rememberResolvedVisits(this.visits);
       const visits = makeVisits(photos);
       const previousVisits = new Map(this.visits.map(visit => [visit.id, visit]));
       for (const visit of visits) {
@@ -472,7 +454,6 @@ export class VisitAnalysisService {
         if (previous.adminCountry !== undefined) visit.adminCountry = previous.adminCountry;
       }
       await this.google.resolve(visits, privatePlaces.places || []);
-      applyBuiltinAreas(visits);
       await enrichVisitsWithCity(visits, this.visits);
       this.result = {
         schema: 1,
@@ -505,9 +486,9 @@ export class VisitAnalysisService {
     this.busy = true; this.error = null;
     try {
       const privatePlaces = await readJson(PRIVATE_PLACES, { places: [] });
+      this.google.rememberResolvedVisits(this.visits);
       for (const visit of this.visits) { delete visit.newLabel; delete visit.labelSource; delete visit.labelDistanceMeters; delete visit.labelError; }
       await this.google.resolve(this.visits, privatePlaces.places || []);
-      applyBuiltinAreas(this.visits);
       await enrichVisitsWithCity(this.visits);
       this.result.generatedAt = Date.now();
       this.rebuildLocationIndex();

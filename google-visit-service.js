@@ -87,6 +87,17 @@ export class GoogleVisitService {
       labelDistanceMeters: best.value.labelDistanceMeters ?? null
     };
   }
+  rememberResolvedVisits(visits = []) {
+    const trustedSources = new Set(['builtin-area', 'google-visit', 'google-visit-cache', 'google-visit-spatial-cache', 'private']);
+    for (const visit of visits) {
+      if (!visit?.newLabel || !trustedSources.has(visit.labelSource)) continue;
+      this.cache[visit.id] = this.cacheValue(visit, {
+        newLabel: visit.newLabel,
+        labelSource: 'learned-place',
+        labelDistanceMeters: visit.labelDistanceMeters ?? null
+      });
+    }
+  }
   privateName(visit, places) {
     return places.map(place => ({ place, km: distanceKm(visit, place) })).filter(x => x.km * 1000 <= Number(x.place.radiusMeters || 0)).sort((a, b) => a.km - b.km)[0]?.place?.name || null;
   }
